@@ -1,0 +1,30 @@
+{
+  "name": "pi-small-model-addons",
+  "version": "0.1.0",
+  "description": "Tool-level guards and skill prompts for pi-mono, optimised for small local LLMs. Ports techniques from the little-coder paper (itayinbarr).",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "pi-mono",
+    "small-llm",
+    "local-llm",
+    "qwen",
+    "llama",
+    "lm-studio",
+    "ollama"
+  ],
+  "license": "MIT",
+  "author": "katlis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/katlis/pi-small-model-addons.git"
+  },
+  "homepage": "https://github.com/katlis/pi-small-model-addons#readme",
+  "bugs": {
+    "url": "https://github.com/katlis/pi-small-model-addons/issues"
+  },
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  }
+}
