@@ -29,7 +29,12 @@ function toAbs(cwd: string, p: string): string {
 export default function (pi: ExtensionAPI) {
 	const deleted = new Set<string>();
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (event) => {
+		// pi 0.67+ supplies event.reason ∈ "startup" | "reload" | "new" | "resume" | "fork".
+		// Preserve deletion tracking when branch history is preserved (resume/fork/reload);
+		// wipe only when the session is genuinely fresh.
+		const reason = (event as { reason?: string }).reason;
+		if (reason === "resume" || reason === "fork" || reason === "reload") return;
 		deleted.clear();
 	});
 
