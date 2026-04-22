@@ -17,11 +17,11 @@
   "author": "katlis",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/katlis/pi-small-model-addons.git"
+    "url": "git+https://github.com/alisorcorp/pi-small-model-addons.git"
   },
-  "homepage": "https://github.com/katlis/pi-small-model-addons#readme",
+  "homepage": "https://github.com/alisorcorp/pi-small-model-addons#readme",
   "bugs": {
-    "url": "https://github.com/katlis/pi-small-model-addons/issues"
+    "url": "https://github.com/alisorcorp/pi-small-model-addons/issues"
   },
   "pi": {
     "extensions": ["./extensions"],

@@ -33,7 +33,7 @@ Skills and extensions work in tandem. The skill nudges the model toward the righ
 Requires [`pi`](https://github.com/badlogic/pi-mono) v0.66 or later.
 
 ```bash
-pi install git:github.com/katlis/pi-small-model-addons
+pi install git:github.com/alisorcorp/pi-small-model-addons
 ```
 
 That's it. Extensions load automatically on next `pi` launch. Skills are available via their descriptions (auto-loaded on matching tasks) or explicitly as `/skill:workspace-discovery` / `/skill:edit-over-write`.
