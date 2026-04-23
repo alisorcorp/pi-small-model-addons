@@ -2,19 +2,26 @@
  * Repetition-Loop Abort
  *
  * Detects when the model is about to issue the same tool call (same name +
- * same arguments) for the Nth consecutive time and aborts it, returning a
+ * same arguments) for the Nth consecutive turn and aborts it, returning a
  * reason that tells the model the approach is not working and it should
  * change tactics.
  *
  * Implements the repetition-loop abort from the little-coder paper
  * (itayinbarr): small models often thrash on a failing hypothesis, re-running
  * the same command expecting a different result. Three identical consecutive
- * calls is the default threshold — tune with PI_LOOP_THRESHOLD env var.
+ * turns is the default threshold — tune with PI_LOOP_THRESHOLD env var.
  *
- * "Consecutive" means: within the last window of tool calls in the current
- * session branch, counting from the most recent backward, every call up to
- * N-1 was identical to the incoming call. Interleaved unrelated calls reset
- * the streak.
+ * Streak semantics (v0.1.4):
+ *   The streak counts across assistant MESSAGES (turns), not across individual
+ *   toolCall content blocks. A single assistant message emitting several
+ *   identical tool calls in parallel (common with parallel tool-calling) counts
+ *   as ONE streak entry, not N. This avoids a false-positive class where the
+ *   very first call of a parallel batch is blocked because the branch at
+ *   event-fire time already contains N identical hashes from the same in-flight
+ *   message.
+ *
+ *   Interleaved non-matching tool-call turns reset the streak. Pure text
+ *   assistant turns (no tool calls) do not contribute to or break the streak.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -51,21 +58,32 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		const incoming = hashInput(event.toolName, event.input);
 
-		const prior: string[] = [];
+		// Per-message boolean: does this assistant message contain at least one
+		// toolCall whose hash matches `incoming`? Text-only messages are skipped
+		// entirely (they don't affect streak in either direction).
+		const messageMatches: boolean[] = [];
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
 			const msg = (entry as { message?: { role?: string; content?: unknown } }).message;
 			if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+
+			let hasToolCall = false;
+			let matched = false;
 			for (const block of msg.content as ToolCallBlock[]) {
 				if (block?.type === "toolCall" && typeof block.name === "string") {
-					prior.push(hashInput(block.name, block.arguments));
+					hasToolCall = true;
+					if (hashInput(block.name, block.arguments) === incoming) {
+						matched = true;
+						break; // one match per message is enough
+					}
 				}
 			}
+			if (hasToolCall) messageMatches.push(matched);
 		}
 
 		let streak = 0;
-		for (let i = prior.length - 1; i >= 0; i--) {
-			if (prior[i] === incoming) streak++;
+		for (let i = messageMatches.length - 1; i >= 0; i--) {
+			if (messageMatches[i]) streak++;
 			else break;
 		}
 
@@ -73,7 +91,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (ctx.hasUI) {
 			ctx.ui.notify(
-				`loop-abort: "${event.toolName}" called ${threshold}x with identical args — blocking`,
+				`loop-abort: "${event.toolName}" called on ${threshold} consecutive turns with identical args — blocking`,
 				"warning",
 			);
 		}
@@ -81,7 +99,7 @@ export default function (pi: ExtensionAPI) {
 		return {
 			block: true,
 			reason:
-				`repetition-loop-abort: this is the ${threshold}th consecutive identical call to "${event.toolName}" ` +
+				`repetition-loop-abort: this is the ${threshold}th consecutive turn issuing an identical call to "${event.toolName}" ` +
 				`with the same arguments. The previous attempts did not produce the result you expected, ` +
 				`and repeating the same call will not change that. ` +
 				`Change your approach: inspect the last tool result carefully, try different arguments, ` +

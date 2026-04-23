@@ -1,6 +1,6 @@
 {
   "name": "pi-small-model-addons",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Tool-level guards and skill prompts for pi-mono, optimised for small local LLMs. Ports techniques from the little-coder paper (itayinbarr).",
   "keywords": [
     "pi-package",
