@@ -99,6 +99,14 @@ The skill's `description` frontmatter is written to trigger on common coding-tas
 
 Complements the tool-level guard by reinforcing the rule at the instruction layer: `write` is for new files only, `edit` is for any change to an existing file, and the `edit` tool scales up to whole-file replacements via `old_string` / `new_string`. When the skill is in context, the model is much less likely to reach for `write` in the first place — so the tool-level guard fires less often, and the model's reasoning stays cleaner.
 
+### Claim-Verification skill
+
+Small models report **plausible-but-wrong** findings during reviews and bug hunts: they recall how a library's API *used to* work, or how code *probably* flows, and state it as fact — often with a confident "High severity" label — without reading the code that would confirm or refute it. Stale training knowledge (renamed parameters, deprecated flags, changed defaults) gets asserted as current truth; control-flow conclusions ("this crashes first", "this branch is unreachable") get asserted without tracing the actual values. A confident wrong finding is worse than no finding — it wastes the user's time and discredits the model's real findings.
+
+The skill imposes a "no claim without a quoted source line" discipline: open and `read` the defining source before asserting anything is wrong, cite the exact `file:line` that proves it, trace a concrete example (or just run it) for runtime/numeric claims, read the whole definition rather than a slice, and explicitly label anything unverified as a guess — never attaching a severity to it. "No issues found" is reinforced as a valid result, so the model doesn't manufacture findings to look productive.
+
+Its `description` frontmatter triggers on review/audit/bug-hunt phrasings and on the act of reporting a finding, so the loader pulls it into context exactly when the model is about to make a claim. It pairs naturally with Workspace Discovery (which makes the model read the project's own conventions first) — together they cover the "find the real source, then verify against it" loop.
+
 ## Credits
 
 - Itay Inbar — [_Honey, I Shrunk the Coding Agent_](https://itayinbarr.substack.com/p/honey-i-shrunk-the-coding-agent) and [little-coder](https://github.com/itayinbarr/little-coder). The Write-vs-Edit invariant, workspace-awareness, and repetition-abort are all direct ports of techniques from that paper.
