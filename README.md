@@ -6,7 +6,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 
 ## Is this for you?
 
-**Yes, if you're running `pi` against a small local model** — Qwen3, Llama 3, Phi, Mistral, Gemma, etc., via LM Studio, Ollama, or llama.cpp. Small models are strong enough to drive a coding agent but they fail in characteristic ways: silently overwriting partial work, getting stuck in loops on failing hypotheses, skipping project conventions. These add-ons address those specific failure modes.
+**Yes, if you're running `pi` against a small local model** — Qwen3, Llama 3, Phi, Mistral, Gemma, etc., via LM Studio, Ollama, or llama.cpp. Small models are strong enough to drive a coding agent but they fail in characteristic ways: silently overwriting partial work, getting stuck in loops on failing hypotheses, skipping project conventions, and confidently reporting unverified guesses as facts. These add-ons address those specific failure modes.
 
 **No, if you're running pi against Claude, GPT-4-class models, or Gemini.** Frontier models don't need any of this — you'd just be adding latency and false positives.
 
@@ -25,6 +25,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 |------|---|
 | `skills/workspace-discovery/` | Before making any code change — directs the model to surface `AGENTS.md`, `CLAUDE.md`, `.docs/instructions.md`, package manifests. |
 | `skills/edit-over-write/` | Any time the model is about to modify an existing file — reinforces the edit-over-write rule at the instruction layer so the tool-level guard fires less often. |
+| `skills/claim-verification/` | Before reporting any finding (bug hunt, code review, audit) — requires quoting the defining source line before asserting code is wrong, tracing control flow instead of guessing, and labelling unverified guesses as guesses. |
 
 Skills and extensions work in tandem. The skill nudges the model toward the right tool; if it tries the wrong one anyway, the extension catches it.
 
