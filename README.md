@@ -18,6 +18,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 |------|---|
 | `extensions/write-vs-edit-guard.ts` | Blocks the `write` tool on files that already exist and tells the model to use `edit` instead. Also closes the common `bash rm && write` and protected-directory bypasses. |
 | `extensions/repetition-loop-abort.ts` | Detects when the model is about to issue the same tool call for the Nth consecutive time (default N=3, tunable via `PI_LOOP_THRESHOLD`) and aborts with a structured reason. |
+| `extensions/read-dir-redirect.ts` | Turns the raw `EISDIR` error from calling `read` on a directory into the directory listing the model was after, so it gets the answer in the same turn instead of spending one on recovery. |
 
 ### Skills (auto-loaded instruction prompts)
 
@@ -63,6 +64,16 @@ PI_LOOP_THRESHOLD=4 pi
 
 Default: `3`. Minimum: `2`. Values below 2 are ignored.
 
+### Directory listing size
+
+Set `PI_READ_DIR_LIMIT` to change how many entries a redirected directory read returns before truncating:
+
+```bash
+PI_READ_DIR_LIMIT=50 pi
+```
+
+Default: `200`. Minimum: `1`. Non-numeric and out-of-range values fall back to the default. Lower it if listings of large directories are crowding a small context window.
+
 ### Disabling individual pieces
 
 Use `pi config` (interactive TUI) to toggle individual extensions or skills without uninstalling the whole package.
@@ -88,6 +99,16 @@ On every `tool_call`, the extension walks the current session branch, collects e
 "Consecutive" matters more than "N of M" — interleaved unrelated calls reset the streak. This avoids false positives when the model legitimately re-reads a file after unrelated work.
 
 Argument comparison uses a stable stringifier (sorted keys, recursive) so key ordering differences don't mask identical calls.
+
+### Read-Directory Redirect
+
+pi's `read` tool has no directory guard, so pointing it at a directory surfaces the raw syscall error: `EISDIR: illegal operation on a directory, read`. Small models do this constantly — reaching for `read` on a directory is the natural first move when orienting in an unfamiliar project — and an errno teaches them nothing, so they spend the next turn recovering with `ls` or a `bash ls -la`. On a slow local model that recovery round trip costs minutes of wall-clock for information that was already available.
+
+This extension repairs the result rather than punishing the call. On `tool_result` for `read`, if the target resolves to a directory, the failed result is replaced with an alphabetical listing (dotfiles included, `/` suffix on directories, matching pi's own `ls` output) and marked as a success. The replacement text leads with the fact that `read` does not apply to directories and points at `ls` for next time, so the correction still lands — it just doesn't cost a turn.
+
+It is deliberately **not** a `tool_call` block like the write guard. pi converts a blocked call into an error tool result, which is the wrong signal here: reading a directory is a harmless mistake, not a dangerous one, and the model had already told you exactly what it wanted.
+
+Paths are resolved the way pi resolves them — `~` expansion, `@` prefix stripping, unicode space normalisation, `file://` URLs, and relative paths against the session cwd — so tilde and relative arguments are matched rather than silently missed. Listings are capped (see `PI_READ_DIR_LIMIT`) so a stray `read` on `node_modules/` cannot flood a small context window. Reads of regular files, missing paths, and unreadable directories are left untouched, so pi's own error messages still surface unchanged.
 
 ### Workspace Discovery skill
 
