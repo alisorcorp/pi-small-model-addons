@@ -1,42 +1,52 @@
 ---
 name: claim-verification
-description: Use whenever you are about to claim that code is buggy, broken, wrong, deprecated, or unsafe, or that a function/parameter/type/flag/API behaves a certain way — during bug hunts, code reviews, audits, security reviews, "is this correct?" questions, or any finding you are about to report to the user. Forces you to open and quote the defining source before asserting, to trace control flow instead of guessing, and to label unverified guesses as guesses rather than facts. Applies any time you would attach a severity, a "this is a bug", or a "you should change X" to code.
+description: Use whenever you are about to claim that code is buggy, broken, wrong, deprecated, or unsafe, or that a function/parameter/type/flag/API behaves a certain way — during bug hunts, code reviews, audits, security reviews, "is this correct?" questions, or any finding you are about to report to the user. Forces every finding to carry a traced failure scenario and a failed refutation attempt before it can be reported, and to label unverified guesses as guesses rather than facts. Applies any time you would attach a severity, a "this is a bug", or a "you should change X" to code.
 ---
 
 # Claim Verification
 
-## MANDATORY — verify before you assert
+## The mistake you are actually going to make
 
-Small models report **plausible-but-wrong** findings: they recall how a library's API *used to* work, or how code *probably* flows, and state it as fact — often with a confident "High severity" label — without ever reading the code that would confirm or refute it. A confident wrong finding is worse than finding nothing: it wastes the user's time and discredits your real findings.
+You will not invent a bug out of nothing. You will report a **plausible neighbour of something real**: a genuine quirk sitting two lines away from the thing you flagged, a real dependency you garbled, a library behaviour that was true in some other version. It will feel like you are reading the code, because you *are* reading the code — you are just not deriving your conclusion from it.
 
-Before you state that any code is buggy, broken, deprecated, or unsafe, or that a symbol behaves a certain way, you MUST have read and quoted the source that proves it. If you have not, you do not have a finding — you have a guess, and you must label it as one.
+So "only report what's in the code" is not a rule you can follow. You already believe you are following it. What follows is structural instead: work you must **produce**, not discipline you must remember.
 
-## Rule: no claim without a quoted source line
+Quoting the source does not protect you. It is possible — common — to quote the exact line that disproves your claim and assert the claim anyway. The check happens *after* the quote is in hand, and that is the step that gets skipped.
 
-1. **Open the definition.** `read` the actual source that defines the thing — the function signature, the class, the config schema, the installed library file. For a local package, the source usually lives in the repo itself (see `workspace-discovery`), not only in `.venv/`, `node_modules/`, or `site-packages/`. If a `find`/`grep` comes back empty, look in the repo root before concluding it doesn't exist.
-2. **Quote the line.** Every finding must cite the exact source (`file:line` + the text) that proves it.
-3. **If you can't verify, say "unverified".** Never attach a severity (High/Medium/Low) or a "this is a bug" to something you did not confirm against the source.
+## Every finding must carry these fields
 
-## Your training memory is not ground truth
+A finding with a missing field is not a finding. Do not report it. Say "no issues found" instead.
 
-The code in front of you wins over your recollection, every time:
+1. **Claim** — one sentence. What is wrong.
+2. **Evidence** — `file:line` plus the quoted lines.
+3. **Failing input or state** — a concrete one. "A meeting starting in 90 seconds while `dismissed_until` is unset", not "certain conditions".
+4. **Trace** — walk that input through the quoted code, step by step, to the wrong output. Name the value at each step. If you cannot produce the walk, you do not understand the path well enough to report it.
+5. **Refutation attempt** — see below. What would stop this bug, where you looked for it, and why it does not apply.
+6. **Provenance** — `new` if you derived it from the code, `restated` if the repo's own docs, comments, `CLAUDE.md`, or `AGENTS.md` already say it. Restating documented behaviour as a discovery inflates your apparent hit rate and wastes the reader's attention.
+7. **Confidence** — `confirmed` (you produced fields 2–5) or `unverified` (you did not). Never attach a severity to an `unverified` item.
 
-- **Library APIs drift.** Parameters get renamed, flags deprecated, defaults changed between versions. If you "know" the parameter is `torch_dtype` (not `dtype`), or `device` (not `device_map`), check anyway — the installed version may be newer or older than what you trained on. Read the installed signature; do not assume it.
-- **"This is the wrong way to do X"** requires you to have read how *this* codebase, at *this* version, actually does X. Conventions are project- and version-specific.
+## The refutation pass — the highest-value step
 
-## Trace control flow; don't guess it
+Before reporting, spend one pass trying to **kill your own finding**. Ask: *what mechanism in this codebase would prevent this failure?* Then go look for it.
 
-For any claim about runtime behavior — "this crashes", "this branch is unreachable", "this returns empty", "the loop drops the last element", "this is normalized correctly":
+Look for a guard clause or early return above the line you quoted. A `None`/`nil`/type check. A signal handler, event set, or wake call below it. A caller that filters the input before it ever arrives. A default that makes the branch unreachable. A version pin that settles a library question.
 
-- **Walk a concrete example** through the actual code, line by line, or
-- **Run it.** For numeric, loop-count, or edge-case claims, a three-line script or a single command that exercises the path beats arithmetic in your head — silent off-by-one and rounding slips are a classic small-model failure. Prefer an empirical check over a confident assertion.
+Search a few lines **either side** of your quoted code before anything else. That is where the refutation usually lives — a guard immediately above the call you flagged, an event fired immediately below the flag you flagged.
 
-## Read the whole definition, not a slice
+Read the whole function, not the slice you already have. Partial views are how missing-guard bugs get reported wrongly.
 
-To verify a claim you need the full function or class in view. Read the entire file (or the entire definition) in one `read` call rather than guessing from a fragment or re-reading overlapping line-ranges. Partial views are how "intent vs. implementation" and missing-guard bugs get reported wrongly — and repeated slice-reads also waste context and invite loops.
+If you find the mechanism, **the finding is dead — drop it.** Do not soften it into a hedge and report it anyway. If you find nothing, say where you looked; that sentence is what makes the finding trustworthy.
 
-## Match confidence to evidence
+## Watch for self-contradiction
 
-- **Confirmed** — you read and quoted the defining source. Report it as a finding.
-- **Unverified / likely** — reasoning only, source not read. Say so explicitly; no severity.
-- **"No issues found" is a valid, correct result.** Do not manufacture a finding to look productive. Reporting one real bug with a quote beats listing five speculative ones.
+If a sentence in your own write-up states a fact that undercuts your conclusion, the conclusion is wrong — not the fact. Writing "the handler wakes the loop" and then "so the worst case is a full poll interval" is a contradiction inside one sentence, and it is a signal you have stopped deriving and started pattern-matching. Reread your own paragraph before you ship it.
+
+## Version and library claims need a check, not a memory
+
+Any claim about what a language version, stdlib function, or library API does — "this fails before 3.11", "this parameter was renamed", "this flag is deprecated" — is a **memory** claim, and your memory of version history is unreliable.
+
+Check it or label it `unverified`: read the installed source or signature, look it up, or run a one-line interpreter test. Also check what the project actually pins — a version claim is moot if the launcher, lockfile, or manifest pins something else entirely.
+
+## "No issues found" is a correct result
+
+Do not manufacture findings to look productive. One finding with a real trace and a failed refutation is worth more than five hedged observations, and far more than one confident falsehood — a wrong finding costs the reader a full code-reading round trip to disprove, which is the whole cost you were supposed to be saving them.
