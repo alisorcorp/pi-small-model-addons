@@ -13,17 +13,44 @@
  * and treated as if they still existed for guard purposes.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, statSync } from "fs";
-import { isAbsolute, resolve } from "path";
+import { homedir } from "os";
+import { isAbsolute, join, resolve } from "path";
+import { fileURLToPath } from "url";
 
 const PROTECTED_SEGMENTS = [".git/", "node_modules/"];
 
 const RM_PATTERN = /\brm\s+(?:-[a-zA-Z]+\s+)*([^\s;&|<>]+)/g;
 const MV_SRC_PATTERN = /\bmv\s+(?:-[a-zA-Z]+\s+)*([^\s;&|<>]+)\s+[^\s;&|<>]+/g;
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
-function toAbs(cwd: string, p: string): string {
-	return isAbsolute(p) ? p : resolve(cwd, p);
+/**
+ * Resolve a model-supplied path the way pi resolves it: ~ expansion, @ prefix
+ * stripping, unicode space normalisation, file:// URLs, then cwd-relative.
+ *
+ * The ~ case matters for correctness, not tidiness: without it `write
+ * ~/notes.md` resolved to `<cwd>/~/notes.md`, which never exists, so
+ * `existsSync` returned false and the guard waved through a write that
+ * clobbered the real file.
+ *
+ * Duplicated in read-dir-redirect.ts on purpose — pi loads each extension file
+ * standalone and installs are often a flat file copy, so extensions stay
+ * self-contained rather than sharing a module.
+ */
+function toAbs(cwd: string, input: string): string {
+	let p = input.replace(UNICODE_SPACES, " ");
+	if (p.startsWith("@")) p = p.slice(1);
+	if (p === "~") return homedir();
+	if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+	if (/^file:\/\//.test(p)) {
+		try {
+			return fileURLToPath(p);
+		} catch {
+			// fall through to normal resolution
+		}
+	}
+	return isAbsolute(p) ? resolve(p) : resolve(cwd, p);
 }
 
 export default function (pi: ExtensionAPI) {

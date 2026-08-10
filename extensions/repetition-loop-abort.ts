@@ -24,7 +24,7 @@
  *   assistant turns (no tool calls) do not contribute to or break the streak.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type ToolCallBlock = {
 	type: string;

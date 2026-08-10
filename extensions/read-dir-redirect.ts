@@ -19,7 +19,7 @@
  * and there is no reason to make it ask twice.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readdirSync, statSync } from "fs";
 import { homedir } from "os";
 import { isAbsolute, join, resolve } from "path";
