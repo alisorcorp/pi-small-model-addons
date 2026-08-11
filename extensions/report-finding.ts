@@ -142,7 +142,8 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Report one verified review finding (requires a trace and a refutation attempt)",
 		promptGuidelines: [
 			"Report every code-review, audit, or bug-hunt finding by calling report_finding once per finding, instead of describing findings in prose.",
-			'If you cannot fill in every report_finding field, that finding is unverified: drop it rather than reporting it in prose with hedging words like "potential issue", "might", or "worth noting".',
+			'If you cannot produce a trace for a candidate, do not describe it in prose with hedging words like "potential issue", "might", or "worth noting" — call report_finding with confidence "unverified" and no severity instead, so it is labelled rather than smuggled into the summary. Writing findings as prose to avoid the required fields is not an acceptable route.',
+			"Any claim about language, library, or version behaviour belongs in report_finding with a verified_by command, wherever it appears — including in your final summary. Do not state a version bound in prose that you have not checked.",
 			"Before calling report_finding, look for the guard, early return, signal handler, or caller-side filter that would defeat the failure — checking a few lines either side of the code you quoted first — and record that search in the refutation fields.",
 		],
 		parameters: Type.Object({

@@ -21,6 +21,8 @@ You will generate many hypotheses while reading. Each one must finish in exactly
 - **REFUTED** — you found the mechanism that prevents it. Drop it silently. Do not soften a refuted candidate into a hedge and report it anyway.
 - **COULD-NOT-EVALUATE** — you could not resolve it. Drop it, or say plainly that you could not evaluate it. It is not a finding.
 
+**Silence is not the way out.** If a candidate resists a trace, the answer is not to describe it vaguely in your summary, and it is not to drop the whole review and write prose instead — it is to report it *as unverified*, with no severity, through the same channel as everything else. Dropping to prose to avoid filling in the fields defeats the entire point: an unlabelled hedge in a summary is exactly the output this is here to prevent. Report less, but report it labelled.
+
 Findings are the **survivors** of that process, never the **leftovers**. The candidates you could not resolve are the ones most likely to drift into the report as vague "potential issues" — that is the leak this rule closes. It leaks the other way too: a candidate you confirmed in your head and never wrote down is lost. Decide the disposition explicitly, one per candidate.
 
 ## Every finding must carry these fields
