@@ -32,7 +32,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { Type } from "typebox";
 import { fileURLToPath } from "url";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
@@ -157,50 +156,74 @@ export default function (pi: ExtensionAPI) {
 			"Any claim about language, library, or version behaviour belongs in report_finding with a verified_by command, wherever it appears — including in your final summary. Do not state a version bound in prose that you have not checked.",
 			"Before calling report_finding, look for the guard, early return, signal handler, or caller-side filter that would defeat the failure — checking a few lines either side of the code you quoted first — and record that search in the refutation fields.",
 		],
-		parameters: Type.Object({
-			claim: Type.String({
-				description: "One sentence: what is wrong. State it as fact, not as a possibility.",
-			}),
-			file: Type.String({ description: "Path to the file containing the proof." }),
-			line: Type.Number({ description: "1-indexed line where the quoted code starts." }),
-			quote: Type.String({
-				description: "The exact source text at that location that proves the claim. Copy it verbatim.",
-			}),
-			failing_input: Type.String({
-				description:
-					"A concrete input or state that triggers the failure, e.g. 'a meeting starting in 90s with dismissed_until unset'. Not 'certain conditions'.",
-			}),
-			trace: Type.Array(Type.String(), {
-				description:
-					"Step-by-step walk of that input through the quoted code to the wrong output, naming the value at each step.",
-			}),
-			refutation_searched: Type.String({
-				description: "Where you looked for a mechanism that would prevent this failure.",
-			}),
-			refutation_mechanism_found: Type.Boolean({
-				description:
-					"True if you found a guard/handler/filter that prevents the failure. If true the finding is dead and will be rejected — do not report it.",
-			}),
-			refutation_note: Type.String({
-				description: "What you found, or why nothing you found defeats the failure.",
-			}),
-			provenance: Type.String({
-				description:
-					"'new' if you derived this from the code, or 'restated' if the repo's own docs/comments/CLAUDE.md already describe it.",
-			}),
-			confidence: Type.String({
-				description: "'confirmed' if you produced a real trace and refutation, otherwise 'unverified'.",
-			}),
-			severity: Type.Optional(
-				Type.String({ description: "Only allowed when confidence is 'confirmed'." }),
-			),
-			verified_by: Type.Optional(
-				Type.String({
+		// Plain JSON Schema rather than typebox. `Type.Object()` emits exactly this
+		// shape at runtime (no symbols, no metadata), and typebox would be an
+		// undeclared RUNTIME dependency — pi installs packages with --omit=dev, so
+		// a `pi install` user could hit a module-not-found. No import, no problem.
+		parameters: {
+			type: "object",
+			required: [
+				"claim",
+				"file",
+				"line",
+				"quote",
+				"failing_input",
+				"trace",
+				"refutation_searched",
+				"refutation_mechanism_found",
+				"refutation_note",
+				"provenance",
+				"confidence",
+			],
+			properties: {
+				claim: { type: "string", description: "One sentence: what is wrong. State it as fact, not as a possibility." },
+				file: { type: "string", description: "Path to the file containing the proof." },
+				line: { type: "number", description: "1-indexed line where the quoted code starts." },
+				quote: {
+					type: "string",
+					description: "The exact source text at that location that proves the claim. Copy it verbatim.",
+				},
+				failing_input: {
+					type: "string",
 					description:
-						"Required for any claim about language/library/version behaviour: the command you actually ran and its output (e.g. `python3 -c \"...\"` -> result), or the installed source you read. Your memory of version history does not count.",
-				}),
-			),
-		}),
+						"A concrete input or state that triggers the failure, e.g. 'a meeting starting in 90s with dismissed_until unset'. Not 'certain conditions'.",
+				},
+				trace: {
+					type: "array",
+					items: { type: "string" },
+					description:
+						"Step-by-step walk of that input through the quoted code to the wrong output, naming the value at each step.",
+				},
+				refutation_searched: {
+					type: "string",
+					description: "Where you looked for a mechanism that would prevent this failure.",
+				},
+				refutation_mechanism_found: {
+					type: "boolean",
+					description:
+						"True if you found a guard/handler/filter that prevents the failure. If true the finding is dead and will be rejected — do not report it.",
+				},
+				refutation_note: {
+					type: "string",
+					description: "What you found, or why nothing you found defeats the failure.",
+				},
+				provenance: {
+					type: "string",
+					description:
+						"'new' if you derived this from the code, or 'restated' if the repo's own docs/comments/CLAUDE.md already describe it.",
+				},
+				confidence: {
+					type: "string",
+					description: "'confirmed' if you produced a real trace and refutation, otherwise 'unverified'.",
+				},
+				severity: { type: "string", description: "Only allowed when confidence is 'confirmed'." },
+				verified_by: {
+					type: "string",
+					description:
+						"Required for any claim about language/library/version behaviour, or any claim naming an exception type: the command you actually ran and its output (e.g. `python3 -c \"...\"` -> result), or the installed source you read. Your memory does not count.",
+				},
+			},
+		},
 
 		async execute(_toolCallId, params: any, _signal, _onUpdate, ctx: any) {
 			const {

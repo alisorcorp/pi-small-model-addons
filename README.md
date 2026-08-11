@@ -1,6 +1,6 @@
 # pi-small-model-addons
 
-Tool-level guards and skill prompts for [`pi`](https://github.com/badlogic/pi-mono) (the `@mariozechner/pi-coding-agent` CLI), tuned for driving it with a **small local LLM** instead of a frontier cloud model.
+Tool-level guards and skill prompts for [`pi`](https://github.com/badlogic/pi-mono) (the `@earendil-works/pi-coding-agent` CLI, formerly `@mariozechner/…`), tuned for driving it with a **small local LLM** instead of a frontier cloud model.
 
 It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent_](https://itayinbarr.substack.com/p/honey-i-shrunk-the-coding-agent) paper ([little-coder](https://github.com/itayinbarr/little-coder)) into pi's native extension and skill system. Nothing is forked. Everything is an add-on.
 
@@ -33,7 +33,7 @@ Skills and extensions work in tandem. The skill nudges the model toward the righ
 
 ## Install
 
-Requires [`pi`](https://github.com/badlogic/pi-mono) v0.66 or later.
+Requires [`pi`](https://github.com/badlogic/pi-mono) **v0.68 or later** — `report-finding` needs the `before_agent_start` system-prompt return added in 0.68.0. Developed and tested against 0.84.x.
 
 ```bash
 pi install git:github.com/alisorcorp/pi-small-model-addons
@@ -52,6 +52,14 @@ Uninstall with:
 ```bash
 pi remove pi-small-model-addons
 ```
+
+## Testing
+
+```bash
+npm test
+```
+
+Runs the extension logic directly under Node's type stripping — no build step, no dependencies, no pi instance and no model required. Covers the guard behaviour, the schema enforcement, path resolution (`~`, `@`, `file://`, relative), and the claim-memory round trip.
 
 ## Configuration
 
@@ -122,6 +130,9 @@ It is deliberately **not** a `tool_call` block like the write guard. pi converts
 Paths are resolved the way pi resolves them — `~` expansion, `@` prefix stripping, unicode space normalisation, `file://` URLs, and relative paths against the session cwd — so tilde and relative arguments are matched rather than silently missed. Listings are capped (see `PI_READ_DIR_LIMIT`) so a stray `read` on `node_modules/` cannot flood a small context window. Reads of regular files, missing paths, and unreadable directories are left untouched, so pi's own error messages still surface unchanged.
 
 ### Report-Finding tool
+
+> **Status: experimental.** The three pieces above port techniques with a track record. This one and the claim memory were developed against a *single* model (a 30B dense local model) over several review rounds on *one* codebase. Across those rounds its false-positive rate fell from four confident falsehoods to one, then to zero — but recall did not improve, and it has not yet been run against a repository with a known planted bug. So there is good evidence it suppresses bad claims and **no evidence yet that it preserves good ones**. If you install it, treat a quiet review as unproven rather than clean, and please open an issue with your model and transcript either way.
+
 
 The `claim-verification` skill asks for a traced failure scenario and a failed refutation per finding. Small models read that as a **posture** rather than a procedure: they adopt the vocabulary ("given the claim-verification skill, we should verify claims"), hedge the conclusion, and ship untraced "potential issues" anyway. This was observed directly — a model ran roughly twenty refute-the-hypothesis cycles internally, correctly killed most of them, then reported the survivors in prose with no trace, no citation and no confidence label, at the same apparent confidence as the ones it had actually checked. The thinking was better than the output, and everything was lost at the joint between them.
 
