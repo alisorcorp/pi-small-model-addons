@@ -71,6 +71,16 @@ const HEDGE = /\b(potential|possible|possibly|perhaps|probably|unclear|unsure)\b
 const MEMORY_CLAIM =
 	/\b\d+\.\d+\+|\b(?:since|before|prior to|as of|requires?|added in|removed in|introduced in)\s+v?\d+\.\d+|\bdeprecat|\brenamed\b|\bbackport/i;
 
+/**
+ * "X raises SomeError" is a memory claim too, and a uniquely cheap one to
+ * check — a one-line interpreter run settles it. Observed failure: a model
+ * asserted pytz's localize() "will raise AmbiguousTimeError", never ran the
+ * check, and was wrong (it only raises when you pass is_dst=None). If you
+ * can name the exception you can trigger it; if you cannot trigger it, you
+ * are guessing.
+ */
+const EXCEPTION_CLAIM = /\b(?:will |can |may |could )?(?:raises?|throws?|throwing|raising)\b[^.]{0,80}\b[A-Z]\w*(?:Error|Exception|Warning)\b/;
+
 /** Comments and docs are claims under test, not evidence that settles one. */
 const DOC_AS_EVIDENCE =
 	/\b(?:the\s+)?(?:comment|docstring|doc|docs|documentation|readme|claude\.md|agents\.md)\b[^.]{0,40}\b(?:says?|states?|claims?|notes?|confirms?|asserts?|documents?)\b|\bper the (?:comment|docs?)\b|\bas documented\b/i;
@@ -142,7 +152,8 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Report one verified review finding (requires a trace and a refutation attempt)",
 		promptGuidelines: [
 			"Report every code-review, audit, or bug-hunt finding by calling report_finding once per finding, instead of describing findings in prose.",
-			'If you cannot produce a trace for a candidate, do not describe it in prose with hedging words like "potential issue", "might", or "worth noting" — call report_finding with confidence "unverified" and no severity instead, so it is labelled rather than smuggled into the summary. Writing findings as prose to avoid the required fields is not an acceptable route.',
+			'Any defect-shaped statement in your answer must go through report_finding, whatever you call the section it sits in. "Edge cases", "observations", "environmental notes", "caveats", "things to be aware of" and "not a code defect, but..." are the same claim wearing a different label, and relabelling one does not exempt it. If it says something can fail, crash, raise, be wrong, or be mishandled, it is a finding.',
+			'If you cannot produce a trace for a candidate, call report_finding with confidence "unverified" and no severity — do not describe it in prose instead. Reporting nothing and then listing concerns in the summary is the one route that is never acceptable: it produces exactly the unlabelled, untraced claims this whole process exists to stop.',
 			"Any claim about language, library, or version behaviour belongs in report_finding with a verified_by command, wherever it appears — including in your final summary. Do not state a version bound in prose that you have not checked.",
 			"Before calling report_finding, look for the guard, early return, signal handler, or caller-side filter that would defeat the failure — checking a few lines either side of the code you quoted first — and record that search in the refutation fields.",
 		],
@@ -241,6 +252,15 @@ export default function (pi: ExtensionAPI) {
 
 			// Version/stdlib behaviour comes from training memory, and memory of
 			// version history is unreliable. Make it produce the check or label it.
+			if (EXCEPTION_CLAIM.test(String(claim)) && confidence === "confirmed" && !params.verified_by) {
+				reject(
+					`"${claim}" names a specific exception, which is a claim you can settle by running it rather than recalling it. ` +
+						`Trigger it — a one-line interpreter run is enough — and pass the command and its output as verified_by, ` +
+						`or set confidence to "unverified" and drop the severity. Check the call's default arguments too: ` +
+						`many APIs only raise under a non-default flag.`,
+				);
+			}
+
 			if (MEMORY_CLAIM.test(String(claim)) && confidence === "confirmed" && !params.verified_by) {
 				reject(
 					`"${claim}" is a claim about language or library behaviour, which you are answering from memory. ` +

@@ -23,6 +23,8 @@ You will generate many hypotheses while reading. Each one must finish in exactly
 
 **Silence is not the way out.** If a candidate resists a trace, the answer is not to describe it vaguely in your summary, and it is not to drop the whole review and write prose instead — it is to report it *as unverified*, with no severity, through the same channel as everything else. Dropping to prose to avoid filling in the fields defeats the entire point: an unlabelled hedge in a summary is exactly the output this is here to prevent. Report less, but report it labelled.
 
+**Renaming the section does not change what it is.** A defect-shaped statement is a finding under any heading — "edge cases", "observations", "environmental notes", "caveats", "not a code defect, but…". If a sentence says something can fail, crash, raise, be wrong, or be mishandled, it is subject to every rule here no matter where it sits in your answer. Concluding "no findings" and then listing three concerns at the bottom is reporting three findings, untraced, with the label removed. Watch for a claim escalating on its way out, too: a candidate you thought *may* raise does not become one that *will* raise just because you are now writing the summary.
+
 Findings are the **survivors** of that process, never the **leftovers**. The candidates you could not resolve are the ones most likely to drift into the report as vague "potential issues" — that is the leak this rule closes. It leaks the other way too: a candidate you confirmed in your head and never wrote down is lost. Decide the disposition explicitly, one per candidate.
 
 ## Every finding must carry these fields
