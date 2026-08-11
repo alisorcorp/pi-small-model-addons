@@ -13,7 +13,19 @@ So "only report what's in the code" is not a rule you can follow. You already be
 
 Quoting the source does not protect you. It is possible — common — to quote the exact line that disproves your claim and assert the claim anyway. The check happens *after* the quote is in hand, and that is the step that gets skipped.
 
+## Every candidate ends in exactly one disposition
+
+You will generate many hypotheses while reading. Each one must finish in exactly one of three states, and you must decide which before you write anything:
+
+- **CONFIRMED** — you produced the fields below. Report it.
+- **REFUTED** — you found the mechanism that prevents it. Drop it silently. Do not soften a refuted candidate into a hedge and report it anyway.
+- **COULD-NOT-EVALUATE** — you could not resolve it. Drop it, or say plainly that you could not evaluate it. It is not a finding.
+
+Findings are the **survivors** of that process, never the **leftovers**. The candidates you could not resolve are the ones most likely to drift into the report as vague "potential issues" — that is the leak this rule closes. It leaks the other way too: a candidate you confirmed in your head and never wrote down is lost. Decide the disposition explicitly, one per candidate.
+
 ## Every finding must carry these fields
+
+If `report_finding` is available, call it once per finding — it requires exactly these fields and will reject an incomplete one. Otherwise write them out yourself.
 
 A finding with a missing field is not a finding. Do not report it. Say "no issues found" instead.
 
@@ -35,17 +47,23 @@ Search a few lines **either side** of your quoted code before anything else. Tha
 
 Read the whole function, not the slice you already have. Partial views are how missing-guard bugs get reported wrongly.
 
+**A comment is not a refutation.** "The comment says it's fine" resolves nothing — comments and docstrings are claims under test, exactly like your own. Code that violates its documented guarantee is the single most common real bug, so a doc that agrees with the code is worth nothing and a doc that disagrees is the finding. Only a trace through the code resolves a hypothesis.
+
 If you find the mechanism, **the finding is dead — drop it.** Do not soften it into a hedge and report it anyway. If you find nothing, say where you looked; that sentence is what makes the finding trustworthy.
 
 ## Watch for self-contradiction
 
 If a sentence in your own write-up states a fact that undercuts your conclusion, the conclusion is wrong — not the fact. Writing "the handler wakes the loop" and then "so the worst case is a full poll interval" is a contradiction inside one sentence, and it is a signal you have stopped deriving and started pattern-matching. Reread your own paragraph before you ship it.
 
-## Version and library claims need a check, not a memory
+## You are not allowed to answer your own factual question
 
-Any claim about what a language version, stdlib function, or library API does — "this fails before 3.11", "this parameter was renamed", "this flag is deprecated" — is a **memory** claim, and your memory of version history is unreliable.
+When you catch yourself asking a factual question mid-reasoning — *"does fromisoformat handle offsets before 3.11?"*, *"was this parameter renamed?"* — that question mark is a **trigger to go check**, not a prompt to answer yourself. Answering it from the same memory that produced the doubt launders a guess into a fact, and it will ship as confident output.
 
-Check it or label it `unverified`: read the installed source or signature, look it up, or run a one-line interpreter test. Also check what the project actually pins — a version claim is moot if the launcher, lockfile, or manifest pins something else entirely.
+So: any claim about what a language version, stdlib function, or library API does is a **memory** claim, and your memory of version history is unreliable. Run the check (`python3 -c "..."` and friends are cheap), read the installed source, or label it `unverified` and drop the severity. Also check what the project actually pins — a version claim is moot if the launcher, lockfile, or manifest pins something else entirely.
+
+## Decompose what you can run
+
+"I can't run the tests" is almost never true of the whole system. Before falling back to a static-only read, split the code into what executes without hardware, network, or side effects — pure functions, parsers, time and date logic, anything with a `--test-*` flag or that accepts synthetic input — and run **that**. Reserve static-only treatment for the parts that genuinely need the hardware. One unrunnable component is not a reason to run nothing.
 
 ## "No issues found" is a correct result
 

@@ -19,6 +19,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 | `extensions/write-vs-edit-guard.ts` | Blocks the `write` tool on files that already exist and tells the model to use `edit` instead. Also closes the common `bash rm && write` and protected-directory bypasses. |
 | `extensions/repetition-loop-abort.ts` | Detects when the model is about to issue the same tool call for the Nth consecutive time (default N=3, tunable via `PI_LOOP_THRESHOLD`) and aborts with a structured reason. |
 | `extensions/read-dir-redirect.ts` | Turns the raw `EISDIR` error from calling `read` on a directory into the directory listing the model was after, so it gets the answer in the same turn instead of spending one on recovery. |
+| `extensions/report-finding.ts` | Registers a `report_finding` tool whose schema makes the trace, the refutation attempt, and the confidence label mandatory, so an unverified finding is rejected by the runtime rather than by the model's own discipline. Persists refuted claims across sessions. |
 
 ### Skills (auto-loaded instruction prompts)
 
@@ -63,6 +64,16 @@ PI_LOOP_THRESHOLD=4 pi
 ```
 
 Default: `3`. Minimum: `2`. Values below 2 are ignored.
+
+### Claim memory location
+
+Refuted claims are persisted to `~/.pi/agent/claim-memory.json` and re-injected at the start of each session. Override the path with `PI_CLAIM_MEMORY`:
+
+```bash
+PI_CLAIM_MEMORY=/path/to/claim-memory.json pi
+```
+
+Delete the file to forget everything; edit it by hand to seed a refutation you already know.
 
 ### Directory listing size
 
@@ -109,6 +120,16 @@ This extension repairs the result rather than punishing the call. On `tool_resul
 It is deliberately **not** a `tool_call` block like the write guard. pi converts a blocked call into an error tool result, which is the wrong signal here: reading a directory is a harmless mistake, not a dangerous one, and the model had already told you exactly what it wanted.
 
 Paths are resolved the way pi resolves them — `~` expansion, `@` prefix stripping, unicode space normalisation, `file://` URLs, and relative paths against the session cwd — so tilde and relative arguments are matched rather than silently missed. Listings are capped (see `PI_READ_DIR_LIMIT`) so a stray `read` on `node_modules/` cannot flood a small context window. Reads of regular files, missing paths, and unreadable directories are left untouched, so pi's own error messages still surface unchanged.
+
+### Report-Finding tool
+
+The `claim-verification` skill asks for a traced failure scenario and a failed refutation per finding. Small models read that as a **posture** rather than a procedure: they adopt the vocabulary ("given the claim-verification skill, we should verify claims"), hedge the conclusion, and ship untraced "potential issues" anyway. This was observed directly — a model ran roughly twenty refute-the-hypothesis cycles internally, correctly killed most of them, then reported the survivors in prose with no trace, no citation and no confidence label, at the same apparent confidence as the ones it had actually checked. The thinking was better than the output, and everything was lost at the joint between them.
+
+Instruction cannot close that joint, because the model believes it is already complying. A schema can. `report_finding` makes the fields mandatory arguments, so pi's own argument validation rejects an incomplete finding before it ever executes. The guidelines are registered via `promptGuidelines`, which lands in the system prompt rather than in progressively-disclosed skill text — a stronger channel for a model that treats skills as optional.
+
+Because mandatory fields create pressure to fabricate them, the mechanically checkable ones are checked. The quoted source must actually appear in the cited file. A finding whose own refutation pass found a defeating mechanism is rejected as disproved — and recorded, so it does not come back. A refutation resting on "the comment says it's fine" is rejected, because comments are claims under test. A claim about language or library behaviour must carry the command you ran, or be labelled unverified. `confirmed` requires a real multi-step trace, and an unverified finding cannot carry a severity.
+
+Refuted claims are written to `~/.pi/agent/claim-memory.json` and injected into the system prompt on the next session. This exists because corrections do not survive a session boundary: the same false version claim, corrected and accepted in one session, came back in the next — and it came back as a *question* the model then answered wrongly from memory. Answering it up front is the only thing that breaks that loop.
 
 ### Workspace Discovery skill
 
