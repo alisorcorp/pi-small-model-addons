@@ -1,12 +1,12 @@
 # pi-small-model-addons
 
-Tool-level guards and skill prompts for [`pi`](https://github.com/badlogic/pi-mono) (the `@earendil-works/pi-coding-agent` CLI, formerly `@mariozechner/…`), tuned for driving it with a **small local LLM** instead of a frontier cloud model.
+Tool-level guards and skill prompts for [`pi`](https://github.com/earendil-works/pi) (the `@earendil-works/pi-coding-agent` CLI, formerly `@mariozechner/…`), tuned for driving it with a **small local LLM** instead of a frontier cloud model.
 
 It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent_](https://itayinbarr.substack.com/p/honey-i-shrunk-the-coding-agent) paper ([little-coder](https://github.com/itayinbarr/little-coder)) into pi's native extension and skill system. Nothing is forked. Everything is an add-on.
 
 ## Is this for you?
 
-**Yes, if you're running `pi` against a small local model** — Qwen3, Llama 3, Phi, Mistral, Gemma, etc., via LM Studio, Ollama, or llama.cpp. Small models are strong enough to drive a coding agent but they fail in characteristic ways: silently overwriting partial work, getting stuck in loops on failing hypotheses, skipping project conventions, and confidently reporting unverified guesses as facts. These add-ons address those specific failure modes.
+**Yes, if you're running `pi` against a small local model** — Qwen3, Llama 3, Phi, Mistral, Gemma, etc., via LM Studio, Ollama, or llama.cpp. Small models are strong enough to drive a coding agent but they fail in characteristic ways: silently overwriting partial work, getting stuck in loops on failing hypotheses, skipping project conventions, burning whole turns on recoverable tool errors, and confidently reporting unverified guesses as facts. These add-ons address those specific failure modes.
 
 **No, if you're running pi against Claude, GPT-4-class models, or Gemini.** Frontier models don't need any of this — you'd just be adding latency and false positives.
 
@@ -19,7 +19,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 | `extensions/write-vs-edit-guard.ts` | Blocks the `write` tool on files that already exist and tells the model to use `edit` instead. Also closes the common `bash rm && write` and protected-directory bypasses. |
 | `extensions/repetition-loop-abort.ts` | Detects when the model is about to issue the same tool call for the Nth consecutive time (default N=3, tunable via `PI_LOOP_THRESHOLD`) and aborts with a structured reason. |
 | `extensions/read-dir-redirect.ts` | Turns the raw `EISDIR` error from calling `read` on a directory into the directory listing the model was after, so it gets the answer in the same turn instead of spending one on recovery. |
-| `extensions/report-finding.ts` | Registers a `report_finding` tool whose schema makes the trace, the refutation attempt, and the confidence label mandatory, so an unverified finding is rejected by the runtime rather than by the model's own discipline. Persists refuted claims across sessions. |
+| `extensions/report-finding.ts` | Registers a `report_finding` tool whose schema makes the trace, the refutation attempt and the confidence label mandatory, so an *incomplete* finding is rejected by the runtime rather than by the model's own discipline. An unverified finding is still reportable — it just has to be labelled as one and carry no severity. Persists refuted claims across sessions. |
 
 ### Skills (auto-loaded instruction prompts)
 
@@ -27,19 +27,19 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 |------|---|
 | `skills/workspace-discovery/` | Before making any code change — directs the model to surface `AGENTS.md`, `CLAUDE.md`, `.docs/instructions.md`, package manifests. |
 | `skills/edit-over-write/` | Any time the model is about to modify an existing file — reinforces the edit-over-write rule at the instruction layer so the tool-level guard fires less often. |
-| `skills/claim-verification/` | Before reporting any finding (bug hunt, code review, audit) — requires quoting the defining source line before asserting code is wrong, tracing control flow instead of guessing, and labelling unverified guesses as guesses. |
+| `skills/claim-verification/` | Before reporting any finding (bug hunt, code review, audit) — requires a traced failure scenario and a failed refutation attempt per finding, forces every candidate to an explicit disposition, and labels unverified guesses as guesses. |
 
-Skills and extensions work in tandem. The skill nudges the model toward the right tool; if it tries the wrong one anyway, the extension catches it.
+Skills and extensions work in tandem. The skill states the discipline; the extension enforces it. If the model reaches for the wrong tool, or reports a finding it cannot support, the extension catches it — which matters because small models reliably adopt a skill's vocabulary without adopting its method.
 
 ## Install
 
-Requires [`pi`](https://github.com/badlogic/pi-mono) **v0.68 or later** — `report-finding` needs the `before_agent_start` system-prompt return added in 0.68.0. Developed and tested against 0.84.x.
+Requires [`pi`](https://github.com/earendil-works/pi) **v0.68 or later** — `report-finding` needs the `before_agent_start` system-prompt return added in 0.68.0. Developed and tested against 0.84.x.
 
 ```bash
 pi install git:github.com/alisorcorp/pi-small-model-addons
 ```
 
-That's it. Extensions load automatically on next `pi` launch. Skills are available via their descriptions (auto-loaded on matching tasks) or explicitly as `/skill:workspace-discovery` / `/skill:edit-over-write`.
+That's it. Extensions load automatically on next `pi` launch. Skills are available via their descriptions (auto-loaded on matching tasks) or explicitly as `/skill:workspace-discovery`, `/skill:edit-over-write`, `/skill:claim-verification`.
 
 Update later with:
 
@@ -133,7 +133,6 @@ Paths are resolved the way pi resolves them — `~` expansion, `@` prefix stripp
 
 > **Status: validated on one model.** The three pieces above port techniques with a track record. This one and the claim memory were developed against a *single* model (a 30B dense local model) over several review rounds on one codebase, where its false-positive rate fell from four confident falsehoods to zero. It was then run against a fixture with a deliberately planted bug: it reported three findings through the tool — the planted one plus two genuine additional bugs — each with an executed `verified_by` command, no schema rejections, and no false positive on the decoy sitting next to the bug. So there is now evidence it both suppresses bad claims *and* preserves good ones. Two honest limits: that is one model and a small sample, and recall on **hard, multi-hop bugs is still unproven** — the same model repeatedly walked past cross-function issues in a larger codebase while catching single-function ones cleanly. Please open an issue with your model and transcript.
 
-
 The `claim-verification` skill asks for a traced failure scenario and a failed refutation per finding. Small models read that as a **posture** rather than a procedure: they adopt the vocabulary ("given the claim-verification skill, we should verify claims"), hedge the conclusion, and ship untraced "potential issues" anyway. This was observed directly — a model ran roughly twenty refute-the-hypothesis cycles internally, correctly killed most of them, then reported the survivors in prose with no trace, no citation and no confidence label, at the same apparent confidence as the ones it had actually checked. The thinking was better than the output, and everything was lost at the joint between them.
 
 Instruction cannot close that joint, because the model believes it is already complying. A schema can. `report_finding` makes the fields mandatory arguments, so pi's own argument validation rejects an incomplete finding before it ever executes. The guidelines are registered via `promptGuidelines`, which lands in the system prompt rather than in progressively-disclosed skill text — a stronger channel for a model that treats skills as optional.
@@ -154,16 +153,22 @@ Complements the tool-level guard by reinforcing the rule at the instruction laye
 
 ### Claim-Verification skill
 
-Small models report **plausible-but-wrong** findings during reviews and bug hunts: they recall how a library's API *used to* work, or how code *probably* flows, and state it as fact — often with a confident "High severity" label — without reading the code that would confirm or refute it. Stale training knowledge (renamed parameters, deprecated flags, changed defaults) gets asserted as current truth; control-flow conclusions ("this crashes first", "this branch is unreachable") get asserted without tracing the actual values. A confident wrong finding is worse than no finding — it wastes the user's time and discredits the model's real findings.
+Small models report **plausible-but-wrong** findings during reviews and bug hunts: they recall how a library's API *used to* work, or how code *probably* flows, and state it as fact, often with a confident "High severity" label. Sometimes that happens without reading the code that would settle it; more awkwardly, it also happens after reading it. Stale training knowledge (renamed parameters, deprecated flags, changed defaults) gets asserted as current truth; control-flow conclusions ("this crashes first", "this branch is unreachable") get asserted without tracing the actual values. A confident wrong finding is worse than no finding — it wastes the user's time and discredits the model's real findings.
 
-The skill imposes a "no claim without a quoted source line" discipline: open and `read` the defining source before asserting anything is wrong, cite the exact `file:line` that proves it, trace a concrete example (or just run it) for runtime/numeric claims, read the whole definition rather than a slice, and explicitly label anything unverified as a guess — never attaching a severity to it. "No issues found" is reinforced as a valid result, so the model doesn't manufacture findings to look productive.
+The important detail is that these are not fabricated from nothing. Each false claim is a plausible *neighbour* of something real — a genuine quirk two lines from the thing flagged, a real dependency garbled in the retelling, a library behaviour that was true in some other version. That is why "only report what's in the code" fails as a rule: the model believes it is already following it.
+
+Requiring a citation fails too, and that was measured rather than assumed. A model quoted the exact guard clause that disproved its own claim and asserted the claim anyway, in the same breath — twice, in two different sessions. The comparison between quoted evidence and asserted conclusion happens *after* the quote is in hand, and that is the step being skipped.
+
+So the primitive is not a citation but a **traced failure scenario plus a failed refutation attempt**. Each finding carries a concrete failing input, a step-by-step walk to the wrong output, and a record of where the model looked for the guard that would have prevented it. Each candidate ends in exactly one disposition — confirmed, refuted (dropped silently), or could-not-evaluate — so findings are the survivors of that process rather than its leftovers.
+
+Three further rules come from specific observed failures. A comment is not a refutation, because code violating its own documented guarantee is among the most common real bugs. A factual question in your own reasoning — *"does this API raise on that input?"* — is a trigger to go and check, never something to answer from the same memory that produced the doubt. And a defect-shaped statement is a finding under any heading, because relabelling a section "edge cases" or "environmental notes" is the easiest way out of the discipline. "No issues found" is reinforced as a valid result, so the model doesn't manufacture findings to look productive.
 
 Its `description` frontmatter triggers on review/audit/bug-hunt phrasings and on the act of reporting a finding, so the loader pulls it into context exactly when the model is about to make a claim. It pairs naturally with Workspace Discovery (which makes the model read the project's own conventions first) — together they cover the "find the real source, then verify against it" loop.
 
 ## Credits
 
 - Itay Inbar — [_Honey, I Shrunk the Coding Agent_](https://itayinbarr.substack.com/p/honey-i-shrunk-the-coding-agent) and [little-coder](https://github.com/itayinbarr/little-coder). The Write-vs-Edit invariant, workspace-awareness, and repetition-abort are all direct ports of techniques from that paper.
-- Mario Zechner — [pi-mono](https://github.com/badlogic/pi-mono), whose clean extension/skill API made all of this possible without touching the agent internals.
+- Mario Zechner — [pi](https://github.com/earendil-works/pi) (formerly `pi-mono`), whose clean extension/skill API made all of this possible without touching the agent internals.
 
 ## License
 
