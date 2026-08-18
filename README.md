@@ -17,7 +17,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 | File | What it does |
 |------|---|
 | `extensions/write-vs-edit-guard.ts` | Blocks the `write` tool on files that already exist and tells the model to use `edit` instead. Also closes the common `bash rm && write` and protected-directory bypasses. |
-| `extensions/repetition-loop-abort.ts` | Detects when the model is about to issue the same tool call for the Nth consecutive time (default N=3, tunable via `PI_LOOP_THRESHOLD`) and aborts with a structured reason. |
+| `extensions/repetition-loop-abort.ts` | Detects when the model is thrashing — the same tool call N times, or a repeating cycle of calls, with nothing changed in between (default N=3, tunable via `PI_LOOP_THRESHOLD`) — and aborts with a structured reason. |
 | `extensions/read-dir-redirect.ts` | Turns the raw `EISDIR` error from calling `read` on a directory into the directory listing the model was after, so it gets the answer in the same turn instead of spending one on recovery. |
 | `extensions/report-finding.ts` | Registers a `report_finding` tool whose schema makes the trace, the refutation attempt and the confidence label mandatory, so an *incomplete* finding is rejected by the runtime rather than by the model's own discipline. An unverified finding is still reportable — it just has to be labelled as one and carry no severity. Persists refuted claims across sessions. |
 
@@ -65,13 +65,17 @@ Runs the extension logic directly under Node's type stripping — no build step,
 
 ### Repetition-loop threshold
 
-Set `PI_LOOP_THRESHOLD` to change how many identical consecutive tool calls are allowed before the abort fires:
+Set `PI_LOOP_THRESHOLD` to change how many identical tool calls are allowed before the abort fires:
 
 ```bash
 PI_LOOP_THRESHOLD=4 pi
 ```
 
 Default: `3`. Minimum: `2`. Values below 2 are ignored.
+
+`PI_LOOP_WINDOW` sets how many recent tool-call turns are examined (default: `4 ×
+threshold`). The window is also cleared by any turn that changes the workspace, so
+this is an upper bound rather than the usual limit.
 
 ### Claim memory location
 
@@ -113,9 +117,16 @@ All blocks return a structured `reason` that the model sees as a tool result, co
 
 ### Repetition-Loop Abort
 
-On every `tool_call`, the extension walks the current session branch, collects every prior tool call's `(name, stable-stringified-arguments)` hash, and counts how many of the most recent calls match the incoming call (streak from the tail). If the streak is `≥ PI_LOOP_THRESHOLD`, the call is blocked with a reason telling the model to change approach.
+On every `tool_call`, the extension walks the current session branch and reduces it to one entry per assistant message that issued tool calls, each carrying that message's `(name, stable-stringified-arguments)` hashes. Two rules then run against a **window** of recent turns:
 
-"Consecutive" matters more than "N of M" — interleaved unrelated calls reset the streak. This avoids false positives when the model legitimately re-reads a file after unrelated work.
+1. **Repetition** — the incoming call appears `≥ PI_LOOP_THRESHOLD` times in the window.
+2. **Cycle** — the last `2p` turns are a repeating cycle of period `p` (2–4) and this call continues it. `A,B,A,B…` and `A,B,C,A,B,C…` are as stuck as `A,A,A`, but a consecutive-streak counter scores them 1 forever.
+
+**The window is cleared only by a turn that changes something** — a mutating tool (`write`, `edit`, `patch`, …) or a bash command that writes (redirects, `rm`, `sed -i`, `git add`, package installs). Looking does not count: `echo`, `print`, `cat`, `grep`, `ls`, a re-read. So repetition means "you have tried this N times without changing anything," and the legitimate `edit → re-run → edit → re-run` loop never accumulates, because each edit clears the window.
+
+This replaced a consecutive-streak rule that a local 2-bit model defeated in the wild. Blocked on its 3rd identical call, it issued one throwaway `python3 -c "print('hello')"` — which reset the streak exactly as documented — then re-issued the exact blocked command, which went through. It then alternated `echo done` / `echo test` indefinitely, invisible to a consecutive counter. Both transcripts are regression tests.
+
+Bash classification is an allowlist of *mutating* shapes, not a denylist of inert ones: an unrecognised command is treated as read-only, so nothing unknown can silently re-arm a blocked call. The remaining hole is a deliberate trivial mutation (`echo x > /tmp/f`); closing that needs result-aware progress detection, which this hook cannot see.
 
 Argument comparison uses a stable stringifier (sorted keys, recursive) so key ordering differences don't mask identical calls.
 
