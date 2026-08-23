@@ -53,6 +53,44 @@ function resolveToCwd(input: string, cwd: string): string {
 }
 
 /** Collapse whitespace so quote matching survives reindentation and wrapping. */
+/**
+ * A "(note: the quote looks like it is near line N)" hint, or "".
+ *
+ * The anchor is the quote's first SUBSTANTIAL line, and the file is searched
+ * for that. The obvious-looking inverse -- the first file line contained in
+ * the quote -- is wrong, and reported a correctly cited finding as misplaced:
+ * the quote spanned an if/else, and the first line of the file that happened
+ * to be a substring of it was a bare `else:` two hundred lines earlier. Short
+ * ubiquitous lines (`else:`, `}`, `try:`, `return`) always win that race, so
+ * the anchor has to be long enough to identify a place.
+ *
+ * When the anchor occurs several times, the nearest occurrence to the cited
+ * line decides, and a citation that lands on any of them is left alone: a
+ * repeated line is not evidence that the author picked the wrong copy.
+ */
+function locateHint(lines: string[], quote: string, lineNum: number): string {
+	if (!Number.isFinite(lineNum)) return "";
+	const anchor = quote
+		.split("\n")
+		.map((l) => normalize(l))
+		.find((l) => l.length >= 12 && l !== "...");
+	if (!anchor) return "";
+
+	const hits: number[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (normalize(lines[i]).includes(anchor)) hits.push(i + 1);
+	}
+	if (hits.length === 0) return "";
+
+	let nearest = hits[0];
+	for (const h of hits) {
+		if (Math.abs(h - lineNum) < Math.abs(nearest - lineNum)) nearest = h;
+	}
+	return Math.abs(nearest - lineNum) > 10
+		? ` (note: the quote looks like it is near line ${nearest}, not ${lineNum})`
+		: "";
+}
+
 function normalize(s: string): string {
 	return s.replace(/\s+/g, " ").trim();
 }
@@ -332,11 +370,7 @@ export default function (pi: ExtensionAPI) {
 
 			const lines = contents.split("\n");
 			const lineNum = Number(line);
-			const located = lines.findIndex((l) => needle && normalize(l) && needle.includes(normalize(l)));
-			const lineHint =
-				Number.isFinite(lineNum) && located >= 0 && Math.abs(located + 1 - lineNum) > 10
-					? ` (note: the quote looks like it is near line ${located + 1}, not ${lineNum})`
-					: "";
+			const lineHint = locateHint(lines, quote, lineNum);
 
 			reported++;
 			if (ctx?.hasUI) {

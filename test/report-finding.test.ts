@@ -12,6 +12,30 @@ writeFileSync(
 	["import sys", "", "def load(p):", "    if p is None:", "        return None", "    return open(p).read()", ""].join("\n"),
 );
 
+// Separate fixture for the line-hint locator: a bare `else:` near the top and
+// the real citation site far below it. Modelled on a real false correction --
+// a correctly cited finding at line 344 was reported as "near line 133"
+// because line 133 was `else:` and the quote spanned an if/else.
+const wide = join(root, "wide.py");
+writeFileSync(
+	wide,
+	[
+		"def early(x):",
+		"    if x:",
+		"        return 1",
+		"    else:",
+		"        return 2",
+		...Array(40).fill("# filler"),
+		"def dismiss(in_meeting, active_end, now):",
+		"    if in_meeting and active_end and active_end > now:",
+		"        write_dismissed_until(active_end)",
+		"    else:",
+		"        clear_dismissed()",
+		"",
+	].join("\n"),
+);
+const DISMISS_IF_LINE = 47;
+
 let tool: any;
 const hooks: Record<string, any> = {};
 extension({ on: (e: string, f: any) => (hooks[e] = f), registerTool: (t: any) => (tool = t) } as any);
@@ -93,6 +117,40 @@ const main = async () => {
 	// whitespace-insensitive quote matching
 	const ws = await run({ quote: "return   open(p).read()" });
 	check("quote matching tolerates whitespace", !!ws?.content?.[0]?.text?.includes("recorded"));
+
+	// ---- line-hint locator ------------------------------------------------
+	const MULTILINE_QUOTE = [
+		"if in_meeting and active_end and active_end > now:",
+		"    write_dismissed_until(active_end)",
+		"else:",
+		"    clear_dismissed()",
+	].join("\n");
+
+	const correct = await run({
+		claim: "dismiss during the lead window re-asserts red",
+		file: "wide.py",
+		line: DISMISS_IF_LINE,
+		quote: MULTILINE_QUOTE,
+	});
+	const correctText = String(correct?.content?.[0]?.text ?? "");
+	check(
+		"a correctly cited multi-line quote gets NO line hint",
+		!correctText.includes("looks like it is near"),
+		correctText,
+	);
+
+	const wrong = await run({
+		claim: "dismiss during the lead window re-asserts red, cited at the wrong line",
+		file: "wide.py",
+		line: 4,
+		quote: MULTILINE_QUOTE,
+	});
+	const wrongText = String(wrong?.content?.[0]?.text ?? "");
+	check(
+		"a genuinely misplaced citation still gets a hint pointing at the real line",
+		wrongText.includes(`near line ${DISMISS_IF_LINE}`),
+		wrongText,
+	);
 
 	// tilde path resolution
 	const tilde = await rejects({ file: "~/definitely-not-here-xyz.py" });
