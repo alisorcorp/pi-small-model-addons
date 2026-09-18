@@ -17,7 +17,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 | File | What it does |
 |------|---|
 | `extensions/write-vs-edit-guard.ts` | Blocks the `write` tool on files that already exist and tells the model to use `edit` instead. Also closes the common `bash rm && write` and protected-directory bypasses. |
-| `extensions/repetition-loop-abort.ts` | Detects when the model is thrashing — the same tool call N times, or a repeating cycle of calls, with nothing changed in between (default N=3, tunable via `PI_LOOP_THRESHOLD`) — and aborts with a structured reason. |
+| `extensions/repetition-loop-abort.ts` | Detects when the model is thrashing — the same tool call N times, or a repeating cycle of calls, with nothing changed in between (default N=3, tunable via `PI_LOOP_THRESHOLD`) — and blocks the call with a structured reason. If the model ignores the block and keeps going, the third block since the workspace last changed ends the run. Also aborts a turn whose streamed text or reasoning degenerates into verbatim repetition. |
 | `extensions/read-dir-redirect.ts` | Turns the raw `EISDIR` error from calling `read` on a directory into the directory listing the model was after, so it gets the answer in the same turn instead of spending one on recovery. |
 | `extensions/report-finding.ts` | Registers a `report_finding` tool whose schema makes the trace, the refutation attempt and the confidence label mandatory, so an *incomplete* finding is rejected by the runtime rather than by the model's own discipline. An unverified finding is still reportable — it just has to be labelled as one and carry no severity. Persists refuted claims across sessions. |
 
@@ -76,6 +76,14 @@ Default: `3`. Minimum: `2`. Values below 2 are ignored.
 `PI_LOOP_WINDOW` sets how many recent tool-call turns are examined (default: `4 ×
 threshold`). The window is also cleared by any turn that changes the workspace, so
 this is an upper bound rather than the usual limit.
+
+`PI_LOOP_STOP_AFTER` sets which block, counted within that same window, ends the run
+instead of only blocking the call (default: `3`, so the model gets two chances to change
+approach). Set it to `0` to block without ever stopping:
+
+```bash
+PI_LOOP_STOP_AFTER=0 pi
+```
 
 ### Claim memory location
 

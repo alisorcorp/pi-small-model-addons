@@ -113,6 +113,100 @@ const run = async () => {
 	check("3 identical calls in one message count as one turn", parallel === undefined,
 		JSON.stringify(parallel));
 
+	// ---- Rule 4: a block the model ignores ends the run --------------------
+	//
+	// The fixtures above carry no tool results, so no block is ever on record.
+	// These build real branches: assistant turns followed by the results pi
+	// wrote for them, including the reasons this extension actually returned.
+
+	const asst = (...calls: Array<[string, any]>) => ({
+		type: "message",
+		message: {
+			role: "assistant",
+			content: calls.map(([name, args], i) => ({ type: "toolCall", id: `t${i}`, name, arguments: args })),
+		},
+	});
+	const res = (text: string, isError = false) => ({
+		type: "message",
+		message: { role: "toolResult", isError, content: [{ type: "text", text }] },
+	});
+	const OK = res("ok");
+	const BLOCKED = res(thrice.reason, true);
+	const onBranch = (entries: any[], toolName: string, input: any, abort = () => {}) =>
+		handlers.tool_call(
+			{ toolName, input, toolCallId: "x" },
+			{ hasUI: false, abort, sessionManager: { getBranch: () => entries } } as any,
+		);
+
+	const heeded = await onBranch([asst(BAD), OK, asst(BAD), OK, asst(BAD), BLOCKED], BAD[0], BAD[1]);
+	check("a second block still only blocks", heeded?.block === true && !heeded?.terminate,
+		JSON.stringify(heeded));
+
+	const ignored = await onBranch(
+		[asst(BAD), OK, asst(BAD), OK, asst(BAD), BLOCKED, asst(BAD), BLOCKED],
+		BAD[0],
+		BAD[1],
+	);
+	check("the third block since the last change ends the run", ignored?.terminate === true,
+		JSON.stringify(ignored));
+	check(
+		"the stop is recognisable in the transcript",
+		typeof ignored?.reason === "string" && ignored.reason.startsWith("repetition-loop-abort: stopping the run"),
+		ignored?.reason,
+	);
+
+	// The shape observed in the wild: blocks with a throwaway call between them.
+	const interleaved = await onBranch(
+		[asst(BAD), OK, asst(BAD), OK, asst(BAD), BLOCKED, asst(HELLO), OK, asst(BAD), BLOCKED],
+		BAD[0],
+		BAD[1],
+	);
+	check("a throwaway call between blocks does not reset the count", interleaved?.terminate === true,
+		JSON.stringify(interleaved));
+
+	const afterEdit = await onBranch(
+		[asst(BAD), OK, asst(BAD), OK, asst(BAD), BLOCKED, asst(BAD), BLOCKED, asst(EDIT), OK, asst(BAD), OK, asst(BAD), OK],
+		BAD[0],
+		BAD[1],
+	);
+	check("a real change clears the block count", afterEdit?.block === true && !afterEdit?.terminate,
+		JSON.stringify(afterEdit));
+
+	// Output that quotes a block reason (grep over this file) is not a block.
+	const quoted = res(thrice.reason, false);
+	const grepped = await onBranch([asst(BAD), quoted, asst(BAD), quoted], BAD[0], BAD[1]);
+	check("a successful result that quotes a block reason is not counted", !grepped?.terminate,
+		JSON.stringify(grepped));
+
+	// terminate only takes effect when the whole batch sets it; pairing the
+	// stuck call with a fresh one slips past it, so the next stop aborts.
+	let aborted = false;
+	const stopText = res(ignored.reason, true);
+	const slipped = await onBranch(
+		[asst(BAD), OK, asst(BAD), OK, asst(BAD), BLOCKED, asst(BAD), BLOCKED, asst(BAD, HELLO), stopText, OK],
+		BAD[0],
+		BAD[1],
+		() => {
+			aborted = true;
+		},
+	);
+	check("a stop that did not take is backed by an abort", aborted && slipped?.terminate === true,
+		`aborted=${aborted} ${JSON.stringify(slipped)}`);
+
+	const disabledHandlers: Record<string, any> = {};
+	process.env.PI_LOOP_STOP_AFTER = "0";
+	extension({ on: (evt: string, fn: any) => (disabledHandlers[evt] = fn) } as any);
+	delete process.env.PI_LOOP_STOP_AFTER;
+	const disabled = await disabledHandlers.tool_call(
+		{ toolName: BAD[0], input: BAD[1], toolCallId: "x" },
+		{
+			hasUI: false,
+			sessionManager: { getBranch: () => [asst(BAD), OK, asst(BAD), OK, asst(BAD), BLOCKED, asst(BAD), BLOCKED] },
+		} as any,
+	);
+	check("PI_LOOP_STOP_AFTER=0 keeps blocking without stopping", disabled?.block === true && !disabled?.terminate,
+		JSON.stringify(disabled));
+
 	// ---- Rule 3: degenerate text in the live stream ------------------------
 	//
 	// Both fixtures are the shapes actually observed from Ornith 1.5 asked

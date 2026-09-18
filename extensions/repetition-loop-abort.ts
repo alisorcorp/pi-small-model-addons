@@ -59,6 +59,30 @@
  *   partial message, text and reasoning alike, and `ctx.abort()` ends the
  *   turn -- the same lever a human reaches for, pulled after three repeats
  *   instead of after several minutes.
+ *
+ * Rule 4 — stop the run when blocks are ignored, added in v0.3.2:
+ *   Rules 1 and 2 block the call and tell the model to change approach, which
+ *   assumes the model reads the reason. A 2-bit Qwen3.8-27B reviewing a
+ *   41-line file did not: it re-issued one identical bash command 73 times
+ *   over 25 minutes, every attempt blocked, until an external 30-minute cap
+ *   killed the run. The guard was working and could end nothing, because a
+ *   block costs the model nothing and can be ignored indefinitely.
+ *
+ *   So blocks are counted over the same window as the repeats -- since the
+ *   last workspace change, at most PI_LOOP_WINDOW turns -- and the Nth block
+ *   in it (default 3, i.e. two ignored instructions) also returns `terminate`,
+ *   which ends the agent loop after the current tool batch. That is pi's own
+ *   lever for this, and unlike ctx.abort() it keeps the reason in the
+ *   transcript instead of replacing it with "Operation aborted".
+ *
+ *   `terminate` only takes effect when every call in the batch sets it, so a
+ *   model that pairs the stuck call with a fresh one would slip past it. If a
+ *   stop was already requested inside the window and the model is still
+ *   calling tools, ctx.abort() is the backstop.
+ *
+ *   Blocks are read back from the session -- the tool results this extension
+ *   wrote -- rather than kept in memory, for the same reason the repeats are:
+ *   the branch is the ground truth, and it survives a reload.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -73,6 +97,18 @@ type ToolCallBlock = {
 const DEFAULT_THRESHOLD = 3;
 const WINDOW_MULTIPLIER = 4;
 const MAX_CYCLE_PERIOD = 4;
+
+/** Rule 4: the block, counted within one window, that ends the run. 0 disables. */
+const DEFAULT_STOP_AFTER = 3;
+
+/**
+ * Every block reason starts with BLOCK_PREFIX; the one that ends the run starts
+ * with STOP_PREFIX. Rule 4 recognises its own earlier results by these, so they
+ * are the contract between this extension and its past self -- change them and
+ * blocks already in a session stop being counted.
+ */
+const BLOCK_PREFIX = "repetition-loop-abort:";
+const STOP_PREFIX = `${BLOCK_PREFIX} stopping the run`;
 
 /**
  * Rule 3 tuning. Periods are measured in whitespace-normalised characters, so
@@ -126,7 +162,23 @@ function isMutatingCall(name: string, args: unknown): boolean {
 	return MUTATING_BASH.test(command);
 }
 
-type Turn = { hashes: Set<string>; primary: string; mutating: boolean };
+type Turn = {
+	hashes: Set<string>;
+	primary: string;
+	mutating: boolean;
+	/** One of this turn's calls was blocked by this extension. */
+	blocked: boolean;
+	/** ...with a reason that asked pi to end the run. */
+	stopRequested: boolean;
+};
+
+function resultText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	let out = "";
+	for (const block of content as StreamBlock[]) if (typeof block?.text === "string") out += block.text;
+	return out;
+}
 
 type StreamBlock = { type?: string; text?: string; thinking?: string };
 
@@ -194,6 +246,9 @@ export default function (pi: ExtensionAPI) {
 	const windowSize =
 		Number.isFinite(envWindow) && envWindow >= threshold ? envWindow : threshold * WINDOW_MULTIPLIER;
 
+	const envStopAfter = Number.parseInt(process.env.PI_LOOP_STOP_AFTER ?? "", 10);
+	const stopAfter = Number.isFinite(envStopAfter) && envStopAfter >= 0 ? envStopAfter : DEFAULT_STOP_AFTER;
+
 	pi.on("tool_call", async (event, ctx) => {
 		const incoming = hashInput(event.toolName, event.input);
 
@@ -201,8 +256,23 @@ export default function (pi: ExtensionAPI) {
 		const turns: Turn[] = [];
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
-			const msg = (entry as { message?: { role?: string; content?: unknown } }).message;
-			if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+			const msg = (entry as { message?: { role?: string; content?: unknown; isError?: boolean } }).message;
+			if (!msg) continue;
+
+			// A result this extension wrote marks the turn whose call it blocked.
+			// isError is required so that ordinary output which merely quotes a
+			// block reason -- a grep over this file, say -- is not counted.
+			if (msg.role === "toolResult") {
+				const owner = turns[turns.length - 1];
+				const text = resultText(msg.content);
+				if (owner && msg.isError === true && text.startsWith(BLOCK_PREFIX)) {
+					owner.blocked = true;
+					if (text.startsWith(STOP_PREFIX)) owner.stopRequested = true;
+				}
+				continue;
+			}
+
+			if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
 
 			const hashes = new Set<string>();
 			let primary = "";
@@ -214,7 +284,7 @@ export default function (pi: ExtensionAPI) {
 				hashes.add(h);
 				if (isMutatingCall(block.name, block.arguments)) mutating = true;
 			}
-			if (hashes.size > 0) turns.push({ hashes, primary, mutating });
+			if (hashes.size > 0) turns.push({ hashes, primary, mutating, blocked: false, stopRequested: false });
 		}
 
 		// The window starts after the most recent turn that changed something,
@@ -257,6 +327,29 @@ export default function (pi: ExtensionAPI) {
 
 		if (!reason) return undefined;
 
+		// Rule 4 — the model has already been told to change approach, inside
+		// this same window, and kept going.
+		const blocks = recent.filter((t) => t.blocked).length + 1;
+		if (stopAfter > 0 && blocks >= stopAfter) {
+			// A stop was requested earlier in the window and did not take -- a
+			// mixed batch -- so end it outright.
+			if (recent.some((t) => t.stopRequested)) ctx.abort();
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					`loop-abort: "${event.toolName}" blocked ${blocks} times with nothing changed — stopping the run`,
+					"warning",
+				);
+			}
+			return {
+				block: true,
+				terminate: true,
+				reason:
+					`${STOP_PREFIX}: ${reason}. This is block ${blocks} since the workspace last changed; ` +
+					`the previous ${blocks - 1} asked for a change of approach and none followed. ` +
+					`Ending the run here rather than letting it spin.`,
+			};
+		}
+
 		if (ctx.hasUI) {
 			ctx.ui.notify(`loop-abort: "${event.toolName}" is looping without progress — blocking`, "warning");
 		}
@@ -264,7 +357,7 @@ export default function (pi: ExtensionAPI) {
 		return {
 			block: true,
 			reason:
-				`repetition-loop-abort: ${reason}. Repeating it will not change the result. ` +
+				`${BLOCK_PREFIX} ${reason}. Repeating it will not change the result. ` +
 				`Interleaving a throwaway command (echo, print, ls) does not count as changing anything — ` +
 				`it will not unblock this call. ` +
 				`Change your approach: inspect the last tool result carefully, try different arguments, ` +
