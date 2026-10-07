@@ -2,12 +2,13 @@
  * Semantic code index — chunking, embedding, incremental refresh, cosine search.
  *
  * Kept separate from the extension so it can be tested without a pi instance
- * and without network (inject a fake embedder).
+ * and without a model (inject a fake embedder). The real one is local:
+ * see local-embedder.ts.
  *
  * Storage is two files per repo under ~/.pi/agent/semantic-index/:
  *   <id>.json  chunk metadata (path, line range, preview, file digest)
  *   <id>.bin   embeddings, Float32 row-major, one row per chunk
- * A JSON array of 1024-float vectors would be ~10x the size and slow to parse;
+ * A JSON array of 512-float vectors would be ~10x the size and slow to parse;
  * a flat Float32Array maps straight onto the scoring loop.
  */
 
@@ -16,9 +17,21 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { homedir } from "os";
 import { dirname, join, relative } from "path";
 
-export const EMBED_MODEL = "voyageai/voyage-code-4";
-export const EMBED_DIMS = 1024;
-const EMBED_BATCH = 96;
+/**
+ * The model name is stored in each index and compared on load, so changing it
+ * (or the dimension suffix) retires every existing index and rebuilds on next
+ * use. Vectors from different models are not comparable; mixing them would
+ * rank silently wrong instead of failing.
+ *
+ * 512 of the model's 768 dimensions: on the comparison that chose this model,
+ * 512 ranked exactly as well as 768, while 256 and 128 lost first-place hits.
+ */
+export const EMBED_MODEL = "google/embeddinggemma-2@512";
+export const EMBED_DIMS = 512;
+/** Chunks per request. Small enough that progress is reported every few seconds. */
+const EMBED_BATCH = 32;
+/** How often a long build writes what it has so far. */
+const CHECKPOINT_MS = 20_000;
 
 const CODE_EXT = new Set([
 	".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".rb",
@@ -51,7 +64,13 @@ export type Chunk = {
 
 export type Hit = Chunk & { score: number };
 
-export type Embedder = (texts: string[]) => Promise<number[][]>;
+/**
+ * Documents and queries are embedded differently (the model is trained with a
+ * task prefix on queries and a titled layout on documents), so the embedder is
+ * told which it is being handed. Defaults to "document".
+ */
+export type EmbedKind = "document" | "query";
+export type Embedder = (texts: string[], kind?: EmbedKind) => Promise<number[][]>;
 
 /* ------------------------------------------------------------------ files */
 
@@ -210,7 +229,10 @@ export async function refreshIndex(
 	repoRoot: string,
 	embed: Embedder,
 	onProgress?: (done: number, total: number) => void,
+	opts: { checkpointMs?: number; batch?: number } = {},
 ): Promise<{ chunks: Chunk[]; vecs: Float32Array; embedded: number; reused: number }> {
+	const checkpointMs = opts.checkpointMs ?? CHECKPOINT_MS;
+	const batchSize = opts.batch ?? EMBED_BATCH;
 	const existing = loadIndex(repoRoot);
 	const prevByFile = new Map<string, { chunks: Chunk[]; rows: Float32Array[] }>();
 	if (existing && existing.meta.model === EMBED_MODEL) {
@@ -252,22 +274,61 @@ export async function refreshIndex(
 		}
 	}
 
+	// Checkpointing. A local first build is minutes, not seconds, and an agent turn can be
+	// aborted at any point; without this an interrupted build restarts from zero. Only WHOLE
+	// files are written: a file with some of its chunks saved would look complete to the
+	// digest check above on the next run, and its missing chunks would never be embedded.
+	const totalByFile = new Map<string, number>();
+	for (const p of pending) totalByFile.set(p.chunk.path, (totalByFile.get(p.chunk.path) ?? 0) + 1);
+	const doneByFile = new Map<string, number>();
+	const reusedCount = outChunks.length;
+	const flatten = (chunks: Chunk[], rows: Float32Array[]) => {
+		const dims = rows[0]?.length ?? EMBED_DIMS;
+		const flat = new Float32Array(chunks.length * dims);
+		rows.forEach((r, i) => flat.set(r, i * dims));
+		return { flat, dims };
+	};
+	const checkpoint = () => {
+		const chunks: Chunk[] = [];
+		const rows: Float32Array[] = [];
+		outChunks.forEach((c, i) => {
+			if (i < reusedCount || doneByFile.get(c.path) === totalByFile.get(c.path)) {
+				chunks.push(c);
+				rows.push(outRows[i] as Float32Array);
+			}
+		});
+		if (chunks.length === 0) return;
+		const { flat, dims } = flatten(chunks, rows);
+		saveIndex(repoRoot, chunks, flat, dims);
+	};
+
 	let embedded = 0;
-	for (let i = 0; i < pending.length; i += EMBED_BATCH) {
-		const batch = pending.slice(i, i + EMBED_BATCH);
-		const vecs = await embed(batch.map((b) => b.text));
+	let lastSave = Date.now();
+	for (let i = 0; i < pending.length; i += batchSize) {
+		const batch = pending.slice(i, i + batchSize);
+		const vecs = await embed(batch.map((b) => b.text), "document");
+		if (vecs.length !== batch.length) {
+			throw new Error(`embedder returned ${vecs.length} vectors for ${batch.length} chunks`);
+		}
 		batch.forEach((b, j) => {
 			outChunks.push(b.chunk);
 			outRows.push(l2norm(vecs[j] as number[]));
+			doneByFile.set(b.chunk.path, (doneByFile.get(b.chunk.path) ?? 0) + 1);
 		});
 		embedded += batch.length;
 		onProgress?.(embedded, pending.length);
+		if (Date.now() - lastSave >= checkpointMs && i + batchSize < pending.length) {
+			checkpoint();
+			lastSave = Date.now();
+		}
 	}
 
-	const dims = outRows[0]?.length ?? EMBED_DIMS;
-	const flat = new Float32Array(outChunks.length * dims);
-	outRows.forEach((r, i) => flat.set(r, i * dims));
-	if (pending.length > 0) saveIndex(repoRoot, outChunks, flat, dims);
+	const { flat, dims } = flatten(outChunks, outRows);
+	// Also save when nothing was embedded but files were deleted or the model changed and
+	// everything was dropped: otherwise the stale index is reloaded and re-pruned every time.
+	if (pending.length > 0 || (existing && outChunks.length !== existing.meta.chunks.length)) {
+		saveIndex(repoRoot, outChunks, flat, dims);
+	}
 	return { chunks: outChunks, vecs: flat, embedded, reused };
 }
 
@@ -302,40 +363,6 @@ export function search(
 		if (out.length >= limit) break;
 	}
 	return out;
-}
-
-/* --------------------------------------------------------------- embedder */
-
-export function openRouterEmbedder(apiKey: string): Embedder {
-	return async (texts: string[]) => {
-		const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-			body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
-		});
-		if (!res.ok) throw new Error(`embeddings ${res.status}: ${(await res.text()).slice(0, 300)}`);
-		const json = (await res.json()) as { data: Array<{ embedding: number[]; index?: number }> };
-		const rows = json.data.slice();
-		if (rows.every((r) => typeof r.index === "number")) rows.sort((a, b) => a.index! - b.index!);
-		return rows.map((r) => r.embedding);
-	};
-}
-
-/** pi stores the OpenRouter key in models.json; fall back to the usual env var. */
-export function resolveApiKey(): string | null {
-	if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
-	try {
-		const p = join(homedir(), ".pi", "agent", "models.json");
-		const d = JSON.parse(readFileSync(p, "utf8")) as {
-			providers?: Record<string, { baseUrl?: string; apiKey?: string }>;
-		};
-		for (const prov of Object.values(d.providers ?? {})) {
-			if (prov.baseUrl?.includes("openrouter.ai") && prov.apiKey) return prov.apiKey;
-		}
-	} catch {
-		/* fall through */
-	}
-	return null;
 }
 
 export function formatHits(hits: Hit[]): string {

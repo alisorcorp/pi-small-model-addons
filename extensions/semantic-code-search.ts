@@ -16,22 +16,22 @@
  * a score and ~8 lines of preview, and tells the model to read what looks
  * relevant. The model stays the navigator; this only shortens the search.
  *
- * PRIVACY: indexing sends repository content to the embedding provider
- * (voyage-code-4, via OpenRouter). It is skipped entirely unless the tool is
- * called, and PI_SEMANTIC_SEARCH_ROOTS can restrict it to named repositories.
+ * PRIVACY: nothing leaves the machine. Embeddings come from a local
+ * EmbeddingGemma 2 worker (lib/local-embedder.ts); earlier versions uploaded
+ * repository content to voyage-code-4 via OpenRouter, which is why
+ * PI_SEMANTIC_SEARCH_ROOTS exists. It is still honoured as a way to keep the
+ * tool out of a directory, but it no longer guards an upload.
+ *
+ * COST: the first search in a repository builds its index on the local GPU,
+ * roughly 6 chunks a second on an M4 Max. Build it ahead of time with
+ * scripts/semantic-index.ts for anything large; builds checkpoint and resume.
  */
 
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-	formatHits,
-	loadIndex,
-	openRouterEmbedder,
-	refreshIndex,
-	resolveApiKey,
-	search,
-} from "./lib/code-index.ts";
+import { EMBED_DIMS, EMBED_MODEL, formatHits, loadIndex, refreshIndex, search } from "./lib/code-index.ts";
+import { createLocalEmbedder } from "./lib/local-embedder.ts";
 
 const DEFAULT_LIMIT = 8;
 const MAX_LIMIT = 20;
@@ -49,6 +49,11 @@ function allowedRoot(root: string): boolean {
 }
 
 export default function (pi: ExtensionAPI) {
+	// One worker for the session: loading the model is the slow part, a search is not.
+	const embedder = createLocalEmbedder(EMBED_DIMS);
+	const embed = embedder.embed;
+	pi.on("session_shutdown", () => embedder.dispose());
+
 	pi.registerTool({
 		name: "semantic_code_search",
 		label: "Semantic Code Search",
@@ -80,7 +85,7 @@ export default function (pi: ExtensionAPI) {
 			},
 			required: ["query"],
 		},
-		async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+		async execute(_toolCallId: any, params: any, _signal: any, onUpdate: any, ctx: any) {
 			const args = (params ?? {}) as { query?: unknown; limit?: unknown };
 			const query = typeof args.query === "string" ? args.query.trim() : "";
 			if (!query) return text("semantic_code_search: `query` must be a non-empty description.");
@@ -96,32 +101,30 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (!allowedRoot(root)) {
 				return text(
-					`semantic_code_search is not enabled for ${root}. ` +
-						`Indexing uploads repository content to the embedding provider, and ` +
-						`PI_SEMANTIC_SEARCH_ROOTS restricts that to specific repositories. Use grep here.`,
+					`semantic_code_search is not enabled for ${root}: ` +
+						`PI_SEMANTIC_SEARCH_ROOTS limits it to specific repositories. Use grep here.`,
 				);
 			}
 
-			const apiKey = resolveApiKey();
-			if (!apiKey) {
-				return text(
-					"semantic_code_search: no OpenRouter API key found. Set OPENROUTER_API_KEY, or add an " +
-						"openrouter provider with an apiKey to ~/.pi/agent/models.json. Use grep meanwhile.",
-				);
-			}
-			const embed = openRouterEmbedder(apiKey);
-
-			// A cold index on a large repo is a long upload; say so rather than
+			// A cold index on a large repo is minutes of local GPU work; say so rather than
 			// stalling the turn silently.
-			if (!loadIndex(root) && ctx?.hasUI) {
-				ctx.ui?.notify?.("semantic_code_search: building the index (first run)…", "info");
+			const prior = loadIndex(root);
+			const cold = !prior || prior.meta.model !== EMBED_MODEL;
+			if (cold && ctx?.hasUI) {
+				ctx.ui?.notify?.("semantic_code_search: building the index locally (first run)…", "info");
 			}
+			let lastUpdate = 0;
+			const progress = (done: number, total: number) => {
+				if (typeof onUpdate !== "function" || Date.now() - lastUpdate < 3000) return;
+				lastUpdate = Date.now();
+				onUpdate(text(`semantic_code_search: indexing ${done}/${total} chunks locally…`));
+			};
 
 			let chunks: any[];
 			let vecs: Float32Array;
 			let embedded = 0;
 			try {
-				const r = await refreshIndex(root, embed);
+				const r = await refreshIndex(root, embed, progress);
 				chunks = r.chunks;
 				vecs = r.vecs;
 				embedded = r.embedded;
@@ -136,7 +139,7 @@ export default function (pi: ExtensionAPI) {
 
 			let qvec: number[];
 			try {
-				qvec = (await embed([query]))[0] as number[];
+				qvec = (await embed([query], "query"))[0] as number[];
 			} catch (e) {
 				return text(
 					`semantic_code_search: query embedding failed (${(e as Error).message}). Use grep instead.`,

@@ -100,6 +100,56 @@ const run = async () => {
 		`got ${hits2.map((h) => h.path).join(", ")}`);
 
 	rmSync(repo, { recursive: true, force: true });
+	// ---- an interrupted build resumes, and never saves half a file ----------
+	//
+	// A local first build is minutes long, so it checkpoints. The hazard is a file
+	// saved with only some of its chunks: its digest would match on the next run,
+	// it would be treated as done, and the missing chunks would never be embedded.
+	const big = join(tmpdir(), "sem-index-resume");
+	rmSync(big, { recursive: true, force: true });
+	mkdirSync(big, { recursive: true });
+	const fn = (n: string) => `def ${n}(x):\n    y = x + 1\n    z = y * 2\n    return z\n\n\n`;
+	for (const f of ["a", "b", "c"]) {
+		writeFileSync(join(big, `${f}.py`), [1, 2, 3, 4].map((i) => fn(`${f}_part_${i}`)).join(""));
+	}
+	let calls = 0;
+	const dying = async (texts: string[]) => {
+		if (++calls > 3) throw new Error("interrupted");
+		return fakeEmbed(texts);
+	};
+	let threw = "";
+	try {
+		await refreshIndex(big, dying, undefined, { checkpointMs: 0, batch: 3 });
+	} catch (e) {
+		threw = (e as Error).message;
+	}
+	check("an embedder failure propagates", threw === "interrupted", threw);
+	const partial = loadIndex(big);
+	const perFile = new Map<string, number>();
+	for (const c of partial?.meta.chunks ?? []) perFile.set(c.path, (perFile.get(c.path) ?? 0) + 1);
+	const full = new Map<string, number>();
+	for (const f of ["a.py", "b.py", "c.py"]) {
+		full.set(f, chunkFile([1, 2, 3, 4].map((i) => fn(`${f[0]}_part_${i}`)).join(""), f, "d").length);
+	}
+	check("the interrupted build left a checkpoint", (partial?.meta.chunks.length ?? 0) > 0);
+	check(
+		"the checkpoint holds whole files only",
+		[...perFile].every(([f, n]) => n === full.get(f)),
+		JSON.stringify([...perFile]),
+	);
+	check("and not every file, since it was interrupted", perFile.size < 3, `${perFile.size} files`);
+	const resumed = await refreshIndex(big, fakeEmbed, undefined, { checkpointMs: 0, batch: 3 });
+	const want = [...full.values()].reduce((a, b) => a + b, 0);
+	check("resuming reuses the checkpoint", resumed.reused === (partial?.meta.chunks.length ?? -1),
+		`reused=${resumed.reused} checkpointed=${partial?.meta.chunks.length}`);
+	check("and ends with every chunk indexed exactly once", resumed.chunks.length === want
+		&& new Set(resumed.chunks.map((c) => `${c.path}:${c.start}`)).size === want,
+		`got ${resumed.chunks.length}, want ${want}`);
+	rmSync(big, { recursive: true, force: true });
+	for (const f of Object.values(indexPaths(big)).filter((x) => x.endsWith(".json") || x.endsWith(".bin"))) {
+		rmSync(f, { force: true });
+	}
+
 	console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 	process.exit(failures === 0 ? 0 : 1);
 };

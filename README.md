@@ -20,6 +20,7 @@ It ports several techniques from Itay Inbar's [_Honey, I Shrunk the Coding Agent
 | `extensions/repetition-loop-abort.ts` | Detects when the model is thrashing — the same tool call N times, or a repeating cycle of calls, with nothing changed in between (default N=3, tunable via `PI_LOOP_THRESHOLD`) — and blocks the call with a structured reason. If the model ignores the block and keeps going, the third block since the workspace last changed ends the run. Also aborts a turn whose streamed text or reasoning degenerates into verbatim repetition. |
 | `extensions/read-dir-redirect.ts` | Turns the raw `EISDIR` error from calling `read` on a directory into the directory listing the model was after, so it gets the answer in the same turn instead of spending one on recovery. |
 | `extensions/report-finding.ts` | Registers a `report_finding` tool whose schema makes the trace, the refutation attempt and the confidence label mandatory, so an *incomplete* finding is rejected by the runtime rather than by the model's own discipline. An unverified finding is still reportable — it just has to be labelled as one and carry no severity. Persists refuted claims across sessions. |
+| `extensions/semantic-code-search.ts` | Registers a `semantic_code_search` tool: describe what code does, get candidate files with line ranges. For the moment before you know a single symbol name, where grep has nothing to match. Embeddings come from a local EmbeddingGemma 2 worker, so no repository content leaves the machine. Needs a one-time setup (below). |
 
 ### Skills (auto-loaded instruction prompts)
 
@@ -52,6 +53,16 @@ Uninstall with:
 ```bash
 pi remove pi-small-model-addons
 ```
+
+### Semantic code search needs one more step
+
+`semantic_code_search` embeds code with a local model, which needs a Python environment and a 1.5 GB download. Run once, from a checkout of this repo:
+
+```bash
+scripts/setup-embedder.sh
+```
+
+It creates `~/.pi/agent/embed-venv` (needs [`uv`](https://docs.astral.sh/uv/)) and downloads EmbeddingGemma 2. Until then the tool reports that the embedder is missing and tells the model to use grep; everything else in the package works without it.
 
 ## Testing
 
@@ -104,6 +115,22 @@ PI_READ_DIR_LIMIT=50 pi
 ```
 
 Default: `200`. Minimum: `1`. Non-numeric and out-of-range values fall back to the default. Lower it if listings of large directories are crowding a small context window.
+
+### Semantic code search
+
+The first search in a repository builds its index on the local GPU, at a few chunks a second. For a large repository, build it ahead of time instead of inside an agent turn:
+
+```bash
+node --experimental-strip-types scripts/semantic-index.ts /path/to/repo
+```
+
+Builds checkpoint every 20 seconds and resume if interrupted. After the first build, a search only re-embeds files that changed. Indexes live in `~/.pi/agent/semantic-index/`.
+
+| Variable | Effect |
+|---|---|
+| `PI_EMBED_PYTHON` | Python to run the embedding worker with. Default: `~/.pi/agent/embed-venv/bin/python`. |
+| `PI_EMBED_BATCH_TOKENS` | Token budget per embedding batch. Default: `4000`. Lower it if the worker runs out of GPU memory next to a large model server. |
+| `PI_SEMANTIC_SEARCH_ROOTS` | Colon-separated directories the tool may index. Unset means anywhere. |
 
 ### Disabling individual pieces
 
@@ -159,6 +186,16 @@ Instruction cannot close that joint, because the model believes it is already co
 Because mandatory fields create pressure to fabricate them, the mechanically checkable ones are checked. The quoted source must actually appear in the cited file. A finding whose own refutation pass found a defeating mechanism is rejected as disproved — and recorded, so it does not come back. A refutation resting on "the comment says it's fine" is rejected, because comments are claims under test. A claim about language or library behaviour must carry the command you ran, or be labelled unverified. `confirmed` requires a real multi-step trace, and an unverified finding cannot carry a severity.
 
 Refuted claims are written to `~/.pi/agent/claim-memory.json` and injected into the system prompt on the next session. This exists because corrections do not survive a session boundary: the same false version claim, corrected and accepted in one session, came back in the next — and it came back as a *question* the model then answered wrongly from memory. Answering it up front is the only thing that breaks that loop.
+
+### Semantic code search
+
+Chunks each source file on definition boundaries, embeds the chunks, and ranks them against an embedded description of what you are looking for. It returns paths, line ranges and a short preview, one hit per file, and tells the model to read the candidates before concluding anything: a high score means the code reads like the query, not that it is the cause.
+
+Embeddings come from [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) running in a Python worker that the extension starts on first use and keeps for the session. Vectors are stored at 512 of the model's 768 dimensions.
+
+It replaced `voyage-code-4` via OpenRouter, which meant uploading repository content. On a 4,491-chunk repository with 17 queries written as plain descriptions of known functions, the right file ranked first 71% of the time against 53%, and in the top five 94% against 88%; at 512 dimensions the ranking was unchanged, and at 256 and 128 first-place hits fell. That is a small sample from one repository, with each model used as its documentation recommends. The cost is the first index build, which Voyage did server-side and this does on your GPU.
+
+The worker is mostly memory management, and its comments record why: this 270M model held 32 GB of GPU memory when batched by document count, so batches are sized by token budget, capped at 2,048 tokens, and retried at half size on an out-of-memory error.
 
 ### Workspace Discovery skill
 
