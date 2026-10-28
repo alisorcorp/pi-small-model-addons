@@ -113,6 +113,86 @@ const run = async () => {
 	check("3 identical calls in one message count as one turn", parallel === undefined,
 		JSON.stringify(parallel));
 
+	// ---- The branch as pi actually hands it over ---------------------------
+	//
+	// pi saves an assistant message on message_end, before it runs that
+	// message's tools, so when tool_call fires the branch already ends with the
+	// message issuing the call. The fixtures above leave it out. These put it
+	// back, with the call's real id, the way a live session does: a run on
+	// 2026-10-28 was blocked "at attempt 3" on only the second identical call.
+
+	const live = (prior: Turn[], current: Turn, toolCallId = "live-0") => {
+		const branch = [...prior, current].map((calls, ti) => ({
+			type: "message",
+			message: {
+				role: "assistant",
+				content: calls.map(([name, args], i) => ({
+					type: "toolCall",
+					id: ti === prior.length ? `live-${i}` : `t${ti}-${i}`,
+					name,
+					arguments: args,
+				})),
+			},
+		}));
+		const [name, args] = current[Number(toolCallId.split("-")[1])];
+		return handlers.tool_call(
+			{ toolName: name, input: args, toolCallId },
+			{ hasUI: false, sessionManager: { getBranch: () => branch } } as any,
+		);
+	};
+
+	const liveTwice = await live([[BAD]], [BAD]);
+	check("live branch: the 2nd identical call is allowed", liveTwice === undefined, JSON.stringify(liveTwice));
+
+	const liveThrice = await live([[BAD], [BAD]], [BAD]);
+	check("live branch: the 3rd identical call is blocked", liveThrice?.block === true, JSON.stringify(liveThrice));
+	check(
+		"live branch: the reason counts the attempt correctly",
+		typeof liveThrice?.reason === "string" && liveThrice.reason.includes("attempt 3 "),
+		liveThrice?.reason,
+	);
+
+	const liveCycle = await live([[DONE], [TEST], [DONE], [TEST]], [DONE]);
+	check("live branch: A/B alternation is blocked", liveCycle?.block === true, JSON.stringify(liveCycle));
+
+	// A mutation in the same message as the stuck call has not run yet when the
+	// stuck call is checked, so it must not clear the window.
+	const livePaired = await live([[BAD], [BAD]], [BAD, EDIT]);
+	check("live branch: pairing the call with an edit does not bypass the guard", livePaired?.block === true,
+		JSON.stringify(livePaired));
+
+	// ---- What counts as a workspace change --------------------------------
+	//
+	// Read-only commands must not clear the window. Models add stderr
+	// redirects to nearly every exploratory command, and quoted text is data.
+	const readOnly = [
+		"ls missing 2>/dev/null",
+		"grep -rn foo . 2>&1 | head",
+		"find . -name '*.ts' 2>/dev/null | wc -l",
+		"cat a.txt >&2",
+		"node -v &>/dev/null",
+		'echo "make sure this works"',
+		'echo "1 > 2"',
+		"python3 -c 'print(1 > 2)'",
+	];
+	for (const command of readOnly) {
+		const r = await call([[BAD], [BAD], [["bash", { command }]]], BAD[0], BAD[1]);
+		check(`read-only, does not unblock: ${command}`, r?.block === true, JSON.stringify(r));
+	}
+
+	const writes = [
+		"echo x > out.txt",
+		"cat a >> log.txt 2>/dev/null",
+		"make build",
+		"cd app && make",
+		"npm install",
+		"rm -rf dist",
+	];
+	for (const command of writes) {
+		const r = await call([[BAD], [BAD], [["bash", { command }]]], BAD[0], BAD[1]);
+		check(`a write, unblocks: ${command}`, r === undefined, JSON.stringify(r));
+	}
+
 	// ---- Rule 4: a block the model ignores ends the run --------------------
 	//
 	// The fixtures above carry no tool results, so no block is ever on record.

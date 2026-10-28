@@ -83,6 +83,13 @@
  *   Blocks are read back from the session -- the tool results this extension
  *   wrote -- rather than kept in memory, for the same reason the repeats are:
  *   the branch is the ground truth, and it survives a reload.
+ *
+ * Counting fixes, v0.4.1 (both found by a local Qwen3.8-27B review run):
+ *   The branch pi hands over at tool_call time already holds the message that
+ *   issued the call, so every rule counted the call as its own predecessor and
+ *   blocked one attempt early. See history(). And the write detector read
+ *   `2>/dev/null`, `2>&1` and quoted text as file writes, so ordinary read-only
+ *   exploration kept clearing the window. See INERT_SHELL.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -135,7 +142,24 @@ const MUTATING_TOOLS = new Set(["write", "edit", "multi_edit", "patch", "apply_p
  * read-only, so an unknown command cannot silently re-arm a blocked call.
  */
 const MUTATING_BASH =
-	/(^|[;&|]\s*)(rm|mv|cp|mkdir|rmdir|touch|ln|chmod|chown|tee|install|patch)\b|>>?\s*\S|\bsed\s+-i|\bgit\s+(add|commit|checkout|apply|reset|restore|rm|mv)\b|\b(npm|pnpm|yarn|bun|pip|pip3|uv|cargo|go|brew)\s+(i|install|add|remove|uninstall|build)\b|\bmake\b|\bdocker\s+(build|run)\b/;
+	/(^|[;&|]\s*)(rm|mv|cp|mkdir|rmdir|touch|ln|chmod|chown|tee|install|patch|make)\b|>>?\s*\S|\bsed\s+-i|\bgit\s+(add|commit|checkout|apply|reset|restore|rm|mv)\b|\b(npm|pnpm|yarn|bun|pip|pip3|uv|cargo|go|brew)\s+(i|install|add|remove|uninstall|build)\b|\bdocker\s+(build|run)\b/;
+
+/**
+ * The parts of a command that cannot write, removed before MUTATING_BASH looks
+ * at it. Without this, `ls x 2>/dev/null` and `grep ... 2>&1` -- which models
+ * append to nearly every exploratory command -- read as file writes and kept
+ * clearing the window, and so did a `>` or the word `make` inside a quoted
+ * string, which is data, not shell.
+ */
+const INERT_SHELL = [
+	/'[^']*'|"(?:[^"\\]|\\.)*"/g, // quoted strings
+	/\d*>&\s*-?\d*/g, // fd duplication: 2>&1, >&2
+	/(?:\d*|&)>>?\s*\/dev\/null\b/g, // discarded output: 2>/dev/null, &>/dev/null
+];
+
+function strippedCommand(command: string): string {
+	return INERT_SHELL.reduce((s, re) => s.replace(re, " "), command);
+}
 
 function stableStringify(v: unknown): string {
 	if (v === null || typeof v !== "object") return JSON.stringify(v);
@@ -159,7 +183,7 @@ function isMutatingCall(name: string, args: unknown): boolean {
 	if (name !== "bash") return false;
 	const a = args as Record<string, unknown> | undefined;
 	const command = typeof a?.command === "string" ? a.command : typeof a?.cmd === "string" ? a.cmd : "";
-	return MUTATING_BASH.test(command);
+	return MUTATING_BASH.test(strippedCommand(command));
 }
 
 type Turn = {
@@ -238,6 +262,32 @@ function repeatingSuffix(tail: string, repeats: number): string | null {
 	return null;
 }
 
+/**
+ * The branch as it stood before the message issuing this call.
+ *
+ * pi saves an assistant message on message_end, before it runs that message's
+ * tools, so by the time tool_call fires the branch already ends with the very
+ * message being checked (and, in a sequential batch, the results of its
+ * earlier calls). Counted as history, that message made the incoming call its
+ * own previous attempt -- every block landed one call early, with "attempt 3"
+ * reported on the second -- and an edit in the same batch, which has not run
+ * yet, cleared the window for the stuck call beside it.
+ *
+ * The message is found by the call's own id, so a branch that does not contain
+ * it yet is returned whole.
+ */
+function history<E extends { type: string }>(branch: E[], toolCallId: string | undefined): E[] {
+	if (!toolCallId) return branch;
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const msg = (branch[i] as { message?: { role?: string; content?: unknown } }).message;
+		if (branch[i].type !== "message" || msg?.role !== "assistant" || !Array.isArray(msg.content)) continue;
+		if ((msg.content as ToolCallBlock[]).some((b) => b?.type === "toolCall" && b.id === toolCallId)) {
+			return branch.slice(0, i);
+		}
+	}
+	return branch;
+}
+
 export default function (pi: ExtensionAPI) {
 	const envThreshold = Number.parseInt(process.env.PI_LOOP_THRESHOLD ?? "", 10);
 	const threshold = Number.isFinite(envThreshold) && envThreshold >= 2 ? envThreshold : DEFAULT_THRESHOLD;
@@ -254,7 +304,7 @@ export default function (pi: ExtensionAPI) {
 
 		// One entry per assistant message that issued tool calls.
 		const turns: Turn[] = [];
-		for (const entry of ctx.sessionManager.getBranch()) {
+		for (const entry of history(ctx.sessionManager.getBranch(), event.toolCallId)) {
 			if (entry.type !== "message") continue;
 			const msg = (entry as { message?: { role?: string; content?: unknown; isError?: boolean } }).message;
 			if (!msg) continue;
